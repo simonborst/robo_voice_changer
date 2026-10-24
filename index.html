@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#14171a">
+<title>Robot Voice</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one-screen rack unit — status display on top, a column of labelled faders, a big power key at the bottom */
+:root{
+  --bg:#14171a; --panel:#1d2126; --line:#2c3238; --fg:#e4e8ea; --dim:#8a949c;
+  --accent:#f2a93b; --live:#5fd38d; --warn:#ff6b57;
+  --display:"Chakra Petch", "Avenir Next Condensed", system-ui, sans-serif;
+  --mono:"IBM Plex Mono", ui-monospace, Menlo, monospace;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{
+  background:var(--bg);color:var(--fg);font:15px/1.4 var(--mono);
+  padding-top:max(16px, env(safe-area-inset-top, 0px));
+  padding-bottom:max(16px, env(safe-area-inset-bottom, 0px));
+  padding-left:max(16px, env(safe-area-inset-left, 0px));
+  padding-right:max(16px, env(safe-area-inset-right, 0px));
+  -webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent;
+}
+.wrap{max-width:460px;margin:0 auto;display:flex;flex-direction:column;gap:16px;min-height:100%}
+header{display:flex;align-items:baseline;justify-content:space-between;gap:12px}
+h1{font:700 26px/1 var(--display);letter-spacing:.06em;text-transform:uppercase;margin:0}
+.model{font-size:11px;color:var(--dim);letter-spacing:.12em}
+
+.screen{background:#0b0d0f;border:1px solid var(--line);border-radius:6px;padding:12px;display:flex;flex-direction:column;gap:8px}
+.status{display:flex;justify-content:space-between;font-size:12px;letter-spacing:.1em;text-transform:uppercase}
+.lamp{display:inline-flex;align-items:center;gap:8px;color:var(--dim)}
+.lamp i{width:9px;height:9px;border-radius:50%;background:var(--line)}
+.on .lamp{color:var(--live)} .on .lamp i{background:var(--live);box-shadow:0 0 8px var(--live)}
+.err .lamp{color:var(--warn)} .err .lamp i{background:var(--warn)}
+canvas{width:100%;height:64px;display:block}
+#msg{font-size:12px;color:var(--dim);min-height:1.4em}
+
+.rack{display:flex;flex-direction:column;gap:14px}
+.fader label{display:flex;justify-content:space-between;font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim);margin-bottom:6px}
+.fader output{color:var(--accent);font-variant-numeric:tabular-nums}
+input[type=range]{-webkit-appearance:none;appearance:none;width:100%;height:36px;background:transparent;margin:0}
+input[type=range]::-webkit-slider-runnable-track{height:6px;border-radius:3px;background:linear-gradient(90deg,var(--accent) var(--p,50%),var(--line) var(--p,50%))}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:28px;height:28px;margin-top:-11px;border-radius:4px;background:var(--fg);border:3px solid var(--panel);box-shadow:0 1px 4px #0008}
+input[type=range]:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+.row{display:flex;gap:10px}
+.chip{flex:1;font:500 12px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--fg);background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:10px 6px}
+.chip[aria-pressed=true]{border-color:var(--accent);color:var(--accent)}
+
+#power{margin-top:auto;font:700 20px var(--display);letter-spacing:.14em;text-transform:uppercase;padding:18px;border-radius:8px;border:0;background:var(--accent);color:#1a1206}
+.on #power{background:var(--panel);color:var(--warn);border:1px solid var(--warn)}
+button:focus-visible{outline:2px solid var(--fg);outline-offset:2px}
+.tip{font-size:11px;color:var(--dim);text-align:center;margin:0}
+</style>
+</head>
+<body>
+<div class="wrap" id="app">
+  <header>
+    <h1>Robot Voice</h1>
+    <span class="model">RM-7 MODULATOR</span>
+  </header>
+
+  <div class="screen">
+    <div class="status"><span class="lamp"><i></i><span id="state">Standby</span></span><span id="lat">— ms</span></div>
+    <canvas id="scope" width="800" height="128"></canvas>
+    <div id="msg">Plug in headphones, then tap Start.</div>
+  </div>
+
+  <div class="rack">
+    <div class="fader"><label for="freq">Robot tone <output id="freqV"></output></label>
+      <input type="range" id="freq" min="10" max="400" step="1" value="60"></div>
+    <div class="fader"><label for="metal">Metallic <output id="metalV"></output></label>
+      <input type="range" id="metal" min="0" max="90" step="1" value="45"></div>
+    <div class="fader"><label for="grit">Grit <output id="gritV"></output></label>
+      <input type="range" id="grit" min="0" max="100" step="1" value="20"></div>
+    <div class="fader"><label for="mix">Robot mix <output id="mixV"></output></label>
+      <input type="range" id="mix" min="0" max="100" step="1" value="100"></div>
+    <div class="fader"><label for="vol">Volume <output id="volV"></output></label>
+      <input type="range" id="vol" min="0" max="200" step="1" value="100"></div>
+    <div class="row" role="group" aria-label="Carrier wave">
+      <button class="chip" data-wave="sine" aria-pressed="true">Smooth</button>
+      <button class="chip" data-wave="square" aria-pressed="false">Buzzy</button>
+      <button class="chip" data-wave="sawtooth" aria-pressed="false">Harsh</button>
+    </div>
+  </div>
+
+  <button id="power">Start</button>
+  <p class="tip">Keeps the screen awake while running. Use headphones to avoid feedback.</p>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const app = $('app');
+const ids = ['freq','metal','grit','mix','vol'];
+const fmt = {
+  freq: v => v + ' Hz',
+  metal: v => v + '%',
+  grit: v => v + '%',
+  mix: v => v + '%',
+  vol: v => v + '%'
+};
+let wave = 'sine';
+
+// restore saved settings
+try {
+  const s = JSON.parse(localStorage.getItem('robotVoice') || '{}');
+  ids.forEach(k => { if (s[k] != null) $(k).value = s[k]; });
+  if (s.wave) wave = s.wave;
+} catch (e) {}
+function save() {
+  try {
+    const s = { wave }; ids.forEach(k => s[k] = $(k).value);
+    localStorage.setItem('robotVoice', JSON.stringify(s));
+  } catch (e) {}
+}
+
+let ctx, stream, src, nodes, wakeLock, raf, running = false;
+
+function curve(amount) {
+  const n = 1024, c = new Float32Array(n), k = amount * 0.6;
+  for (let i = 0; i < n; i++) {
+    const x = i * 2 / n - 1;
+    c[i] = k === 0 ? x : (1 + k) * x / (1 + k * Math.abs(x));
+  }
+  return c;
+}
+
+function build() {
+  const input = ctx.createGain();
+  // gentle high-pass to cut rumble before effects
+  const hp = ctx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 90;
+
+  // ring modulator: voice → gain whose gain is driven by a carrier oscillator
+  const ring = ctx.createGain(); ring.gain.value = 0;
+  const osc = ctx.createOscillator(); osc.type = wave;
+  osc.connect(ring.gain); osc.start();
+
+  // grit (soft clip)
+  const shaper = ctx.createWaveShaper(); shaper.oversample = '2x';
+
+  // metallic comb: short delay with feedback
+  const delay = ctx.createDelay(0.05); delay.delayTime.value = 0.009;
+  const fb = ctx.createGain();
+  const combWet = ctx.createGain();
+  // voice-band shaping for the classic tinny tone
+  const bp = ctx.createBiquadFilter(); bp.type = 'peaking'; bp.frequency.value = 1800; bp.Q.value = 1; bp.gain.value = 6;
+
+  const wet = ctx.createGain(), dry = ctx.createGain(), out = ctx.createGain();
+  const comp = ctx.createDynamicsCompressor(); comp.threshold.value = -18; comp.ratio.value = 6;
+  const analyser = ctx.createAnalyser(); analyser.fftSize = 1024;
+
+  input.connect(hp);
+  hp.connect(dry);
+  hp.connect(ring);
+  ring.connect(shaper);
+  shaper.connect(bp);
+  bp.connect(wet);           // direct robot path
+  bp.connect(delay);
+  delay.connect(fb); fb.connect(delay);
+  delay.connect(combWet); combWet.connect(wet);
+  wet.connect(out); dry.connect(out);
+  out.connect(comp); comp.connect(analyser); analyser.connect(ctx.destination);
+
+  return { input, osc, shaper, delay, fb, combWet, wet, dry, out, analyser };
+}
+
+function apply() {
+  ids.forEach(k => {
+    const el = $(k);
+    $(k + 'V').textContent = fmt[k](el.value);
+    el.style.setProperty('--p', ((el.value - el.min) / (el.max - el.min) * 100) + '%');
+  });
+  document.querySelectorAll('[data-wave]').forEach(b => b.setAttribute('aria-pressed', b.dataset.wave === wave));
+  save();
+  if (!nodes) return;
+  const t = ctx.currentTime, r = 0.03;
+  const f = +$('freq').value;
+  nodes.osc.frequency.setTargetAtTime(f, t, r);
+  nodes.osc.type = wave;
+  // comb delay tracks the robot tone for a pitched metallic ring
+  nodes.delay.delayTime.setTargetAtTime(Math.min(0.045, Math.max(0.002, 1 / Math.max(f, 25))), t, r);
+  const m = $('metal').value / 100;
+  nodes.fb.gain.setTargetAtTime(m * 0.9, t, r);
+  nodes.combWet.gain.setTargetAtTime(m, t, r);
+  nodes.shaper.curve = curve($('grit').value / 10);
+  const mix = $('mix').value / 100;
+  nodes.wet.gain.setTargetAtTime(mix * 1.6, t, r);
+  nodes.dry.gain.setTargetAtTime(1 - mix, t, r);
+  nodes.out.gain.setTargetAtTime($('vol').value / 100, t, r);
+}
+
+async function lockScreen() {
+  try {
+    if ('wakeLock' in navigator && document.visibilityState === 'visible') {
+      wakeLock = await navigator.wakeLock.request('screen');
+    }
+  } catch (e) { /* not granted; carry on */ }
+}
+
+function setStatus(cls, label, msg) {
+  app.classList.toggle('on', cls === 'on');
+  app.classList.toggle('err', cls === 'err');
+  $('state').textContent = label;
+  if (msg != null) $('msg').textContent = msg;
+}
+
+async function start() {
+  try {
+    if (navigator.audioSession) navigator.audioSession.type = 'play-and-record';
+    ctx = ctx || new (window.AudioContext || window.webkitAudioContext)({ latencyHint: 'interactive' });
+    await ctx.resume();
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
+    });
+    src = ctx.createMediaStreamSource(stream);
+    nodes = build();
+    src.connect(nodes.input);
+    apply();
+    running = true;
+    setStatus('on', 'Live', 'Talk away. Adjust the faders while it runs.');
+    $('power').textContent = 'Stop';
+    const lat = ((ctx.baseLatency || 0) + (ctx.outputLatency || 0)) * 1000;
+    $('lat').textContent = lat ? Math.round(lat) + ' ms' : '— ms';
+    lockScreen();
+    ctx.onstatechange = () => { if (running && ctx.state !== 'running') ctx.resume().catch(() => {}); };
+    stream.getAudioTracks()[0].onended = () => { if (running) { stop(); setStatus('err', 'Mic lost', 'The microphone was taken by another app. Tap Start again.'); } };
+    draw();
+  } catch (e) {
+    stop();
+    const why = e && e.name === 'NotAllowedError'
+      ? 'Microphone blocked. Allow it in Settings › Safari › Microphone, then tap Start.'
+      : (!window.isSecureContext ? 'The mic needs an https:// page. See the setup note.' : 'Could not start: ' + (e.message || e));
+    setStatus('err', 'Error', why);
+  }
+}
+
+function stop() {
+  running = false;
+  cancelAnimationFrame(raf);
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  if (nodes) { try { nodes.osc.stop(); } catch (e) {} nodes.out.disconnect(); }
+  if (src) src.disconnect();
+  stream = src = nodes = null;
+  if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
+  setStatus('', 'Standby', 'Stopped. Tap Start to go again.');
+  $('power').textContent = 'Start';
+  clearScope();
+}
+
+const cv = $('scope'), g = cv.getContext('2d');
+function clearScope() {
+  g.clearRect(0, 0, cv.width, cv.height);
+  g.strokeStyle = '#2c3238'; g.lineWidth = 2;
+  g.beginPath(); g.moveTo(0, cv.height / 2); g.lineTo(cv.width, cv.height / 2); g.stroke();
+}
+function draw() {
+  if (!nodes) return;
+  const a = nodes.analyser, buf = new Float32Array(a.fftSize);
+  a.getFloatTimeDomainData(buf);
+  g.clearRect(0, 0, cv.width, cv.height);
+  g.strokeStyle = '#f2a93b'; g.lineWidth = 3; g.beginPath();
+  for (let i = 0; i < buf.length; i++) {
+    const x = i / buf.length * cv.width, y = cv.height / 2 - buf[i] * cv.height * 0.9;
+    i ? g.lineTo(x, y) : g.moveTo(x, y);
+  }
+  g.stroke();
+  raf = requestAnimationFrame(draw);
+}
+
+$('power').addEventListener('click', () => running ? stop() : start());
+ids.forEach(k => $(k).addEventListener('input', apply));
+document.querySelectorAll('[data-wave]').forEach(b => b.addEventListener('click', () => { wave = b.dataset.wave; apply(); }));
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && running) {
+    lockScreen();
+    if (ctx && ctx.state !== 'running') ctx.resume().catch(() => {});
+    cancelAnimationFrame(raf); draw();
+  }
+});
+apply(); clearScope();
+</script>
+</body>
+</html>
