@@ -16,13 +16,15 @@ Every recording becomes a numbered **take** with its own colour. The display sta
 
 | Control | What it does |
 | --- | --- |
-| Natural / Monotone / Snap | Natural keeps your own voice. Monotone re-sings your words on one steady note. Snap follows your pitch and snaps it to the nearest note in a key, like hard auto-tune. |
-| Note / Key | The note for Monotone, or the key for Snap (with Chromatic, Major or Minor). |
+| Natural / Monotone / Snap / Parrot | Natural keeps your own voice. Monotone re-sings your words on one steady note. Snap follows your pitch and snaps it to a few robot-style notes. Parrot raises your voice about an octave with a warble and adds a "craw!" squawk before and after each playback. |
+| Note / Key | The note for Monotone, or the key for Snap. |
+| Root / Fifth / Major / Minor | Which notes Snap may use: one note in octaves, a two-note "beep-boop", or a three-note chord. |
+| Note hold | How long Snap stays on a note before it may jump (default 250 ms). |
 | Tone | Warm to bright. |
 | Robot size | Shifts the voice's resonances: bigger robot or smaller robot, without changing the note. |
 | Solo / + Octave / + Fifth | Adds a second robot voice an octave or a fifth below. |
 
-**Effects:** Metal box (short metallic resonance), Robot mix (blend with your normal voice), Volume.
+**Effects:** Metal box (short metallic resonance), Playback speed (40–150%; the robot keeps its pitch and voice size when slowed), Robot mix (blend with your normal voice), Volume.
 
 **Ring modulator** (off by default): Amount, Speed, Grit, and Smooth / Buzzy / Harsh waveform. This is the classic sci-fi ring-mod sound and adds buzz.
 

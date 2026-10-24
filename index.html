@@ -79,11 +79,15 @@ input[type=range]:focus-visible{outline:2px solid var(--accent);outline-offset:2
 .big.alt{background:var(--panel);color:var(--fg);border:1px solid var(--line)}
 .big:disabled{opacity:.35}
 .meter{position:relative;height:14px;border-radius:3px;background:#0b0d0f;border:1px solid var(--line);overflow:hidden}
-.meter i{position:absolute;inset:0 auto 0 0;width:0;background:var(--live);transition:width 60ms linear}
+.meter{height:18px}
+.meter i,.meter u{position:absolute;inset:0 auto 0 0;width:0}
+.meter u{background:var(--live);opacity:.3}
+.meter i{top:5px;bottom:5px;background:var(--live)}
 .meter.hot i{background:var(--warn)}
 .meter b{position:absolute;top:-1px;bottom:-1px;width:2px}
 #mOn{background:var(--accent)} #mOff{background:var(--dim)}
-.legend{display:flex;justify-content:space-between;font-size:11px;color:var(--dim);letter-spacing:.06em}
+.levels{display:flex;flex-direction:column;gap:4px}
+.legend{display:flex;justify-content:flex-end;gap:16px;font-size:11px;color:var(--dim);letter-spacing:.06em}
 .legend span::before{content:"";display:inline-block;width:8px;height:8px;margin-right:6px;vertical-align:0}
 .legend .lOn::before{background:var(--accent)} .legend .lOff::before{background:var(--dim)}
 .pair{display:flex;gap:10px}.pair .big{flex:1}
@@ -107,6 +111,10 @@ button:focus-visible{outline:2px solid var(--fg);outline-offset:2px}
   <div class="screen" id="screen">
     <div class="status"><span class="lamp"><i></i><span id="state">Standby</span></span><span class="take" id="takeNo"></span><span id="info"></span></div>
     <canvas id="scope" width="800" height="128"></canvas>
+    <div class="levels" id="levels" hidden>
+      <div class="meter" id="meter" aria-hidden="true"><u id="repInst"></u><i id="repBar"></i><b id="mOff"></b><b id="mOn"></b></div>
+      <div class="legend"><span class="lOff">Silence</span><span class="lOn">Start</span></div>
+    </div>
     <div id="msg"></div>
   </div>
 
@@ -116,13 +124,18 @@ button:focus-visible{outline:2px solid var(--fg);outline-offset:2px}
       <button class="chip" data-pitch="off" aria-pressed="false">Natural</button>
       <button class="chip" data-pitch="mono" aria-pressed="true">Monotone</button>
       <button class="chip" data-pitch="snap" aria-pressed="false">Snap</button>
+      <button class="chip" data-pitch="parrot" aria-pressed="false">Parrot</button>
     </div>
-    <div class="fader" data-robot><label for="note"><span id="noteL">Note</span> <output id="noteV"></output></label>
+    <div class="fader" data-robot id="noteFader"><label for="note"><span id="noteL">Note</span> <output id="noteV"></output></label>
       <input type="range" id="note" min="36" max="72" step="1" value="48"></div>
     <div class="row" id="scaleRow" role="group" aria-label="Scale">
-      <button class="chip" data-scale="chromatic" aria-pressed="false">Chromatic</button>
-      <button class="chip" data-scale="major" aria-pressed="true">Major</button>
+      <button class="chip" data-scale="root" aria-pressed="false">Root</button>
+      <button class="chip" data-scale="power" aria-pressed="true">Fifth</button>
+      <button class="chip" data-scale="major" aria-pressed="false">Major</button>
       <button class="chip" data-scale="minor" aria-pressed="false">Minor</button>
+    </div>
+    <div class="fader" id="stickFader"><label for="stick">Note hold <output id="stickV"></output></label>
+      <input type="range" id="stick" min="0" max="800" step="10" value="250">
     </div>
     <div class="fader" data-robot><label for="tone">Tone <output id="toneV"></output></label>
       <input type="range" id="tone" min="0" max="100" step="1" value="45"></div>
@@ -137,6 +150,8 @@ button:focus-visible{outline:2px solid var(--fg);outline-offset:2px}
     <div class="sect">Effects</div>
     <div class="fader"><label for="metal">Metal box <output id="metalV"></output></label>
       <input type="range" id="metal" min="0" max="90" step="1" value="25"></div>
+    <div class="fader"><label for="speed">Playback speed <output id="speedV"></output></label>
+      <input type="range" id="speed" min="40" max="150" step="5" value="100"></div>
     <div class="fader"><label for="mix">Robot mix <output id="mixV"></output></label>
       <input type="range" id="mix" min="0" max="100" step="1" value="100"></div>
     <div class="fader"><label for="vol">Volume <output id="volV"></output></label>
@@ -167,12 +182,10 @@ button:focus-visible{outline:2px solid var(--fg);outline-offset:2px}
   </div>
 
   <div class="transport" id="repPanel" hidden>
-    <div class="meter" id="meter" aria-hidden="true"><i id="repBar"></i><b id="mOff"></b><b id="mOn"></b></div>
-    <div class="legend"><span class="lOn">Start level</span><span class="lOff">Silence level</span></div>
     <div class="fader"><label for="thrOn">Start level <output id="thrOnV"></output></label>
-      <input type="range" id="thrOn" min="-70" max="-5" step="1" value="-35"></div>
+      <input type="range" id="thrOn" min="-70" max="-10" step="1" value="-37"></div>
     <div class="fader"><label for="thrOff">Silence level <output id="thrOffV"></output></label>
-      <input type="range" id="thrOff" min="-80" max="-10" step="1" value="-48"></div>
+      <input type="range" id="thrOff" min="-70" max="-13" step="1" value="-44"></div>
     <div class="fader"><label for="hold">Silence wait <output id="holdV"></output></label>
       <input type="range" id="hold" min="3" max="30" step="1" value="10"></div>
     <div class="pair">
@@ -180,7 +193,7 @@ button:focus-visible{outline:2px solid var(--fg);outline-offset:2px}
       <button class="big alt" id="repNext" hidden>Listen</button>
       <button class="chip" id="repLoop" aria-pressed="false" style="flex:0 0 auto;padding:0 16px">Loop</button>
     </div>
-    <p class="tip">Talk above the start level to record. After the silence wait, it repeats you as a robot, then listens again.</p>
+    <p class="tip">The meter at the top shows your level: solid bar is the half-second average the thresholds use, faint bar is right now. Talk above Start to record; after the silence wait it repeats you, then listens again.</p>
   </div>
 
   <div class="transport" id="livePanel" hidden>
@@ -237,7 +250,7 @@ class RobotVoice extends AudioWorkletProcessor {
   snap(f) {
     const m = 69 + 12 * Math.log2(f / 440), root = this.p.note % 12, set = this.p.scale;
     let best = Math.round(m), bd = 1e9;
-    for (let k = Math.floor(m) - 2; k <= Math.ceil(m) + 2; k++) if (set.includes(((k - root) % 12 + 12) % 12) && Math.abs(k - m) < bd) { best = k; bd = Math.abs(k - m); }
+    for (let k = Math.floor(m) - 12; k <= Math.ceil(m) + 12; k++) if (set.includes(((k - root) % 12 + 12) % 12) && Math.abs(k - m) < bd) { best = k; bd = Math.abs(k - m); }
     return 440 * Math.pow(2, (best - 69) / 12);
   }
   analyse() {
@@ -260,7 +273,8 @@ class RobotVoice extends AudioWorkletProcessor {
     fft(re, im);
     for (let k = 0; k <= N / 2; k++) env[k] = Math.exp(re[k]);
     // build zero-phase grain: envelope (shifted by Size) x soft source rolloff (Tone)
-    const ratio = Math.pow(2, p.size / 12), fc = 400 * Math.pow(2, p.tone / 100 * 4);
+    const parrot = p.pitch === 'parrot';
+    const ratio = Math.pow(2, (p.size + (parrot ? 6 : 0)) / 12) * (p.comp || 1), fc = 400 * Math.pow(2, p.tone / 100 * 4) * (parrot ? 1.8 : 1);
     for (let k = 0; k <= N / 2; k++) {
       const src = k / ratio, i0 = Math.floor(src), fr = src - i0;
       const ev = i0 + 1 <= N / 2 ? env[i0] * (1 - fr) + env[i0 + 1] * fr : env[N / 2] * 0.1;
@@ -277,11 +291,18 @@ class RobotVoice extends AudioWorkletProcessor {
     if (p.pitch === 'snap') {
       const f = this.detect(x);
       if (f) {
-        // hysteresis: stay on the current note until the voice clearly moves away from it
-        const m = 69 + 12 * Math.log2(f / 440), cur = this.snapF ? 69 + 12 * Math.log2(this.snapF / 440) : -99;
-        if (Math.abs(m - cur) > 0.75) this.snapF = this.snap(f);
+        // change note only when the voice is clearly closer to another allowed note,
+        // and not until the current note has been held for the Note hold time
+        const m = 69 + 12 * Math.log2(f / 440), cand = this.snap(f), cm = 69 + 12 * Math.log2(cand / 440);
+        const cur = this.snapF ? 69 + 12 * Math.log2(this.snapF / 440) : null;
+        const held = this.t - (this.changedAt || 0) >= (p.stick || 0) * sampleRate / 1000;
+        if (cur === null || (Math.abs(cand - this.snapF) > 0.01 && held && Math.abs(m - cm) + 0.4 < Math.abs(m - cur))) { this.snapF = cand; this.changedAt = this.t; }
       }
       if (!this.snapF) this.snapF = 440 * Math.pow(2, (p.note - 69) / 12);
+    } else if (p.pitch === 'parrot') {
+      const f = this.detect(x);
+      if (f) this.parF = this.parF ? this.parF * 0.6 + f * 2.4 * 0.4 : f * 2.4;   // ~15 semitones up, follows intonation
+      if (!this.parF) this.parF = 330;
     }
   }
   addGrain(at, amp) {
@@ -295,7 +316,11 @@ class RobotVoice extends AudioWorkletProcessor {
       // shift input in
       this.ring[this.w] = inp ? inp[i] : 0; this.w = (this.w + 1) % N;
       if (++this.hopCount >= HOP) { this.hopCount = 0; this.analyse(); }
-      const f0 = p.pitch === 'snap' ? (this.snapF || 130.8) : 440 * Math.pow(2, (p.note - 69) / 12);
+      let f0 = p.pitch === 'snap' ? (this.snapF || 130.8) : 440 * Math.pow(2, (p.note - 69) / 12);
+      if (p.pitch === 'parrot') { // warble: fast vibrato plus a little random flutter
+        this.flut = (this.flut || 0) * 0.9995 + (Math.random() - 0.5) * 0.004;
+        f0 = (this.parF || 330) * Math.pow(2, (0.45 * Math.sin(2 * Math.PI * 7.5 * this.t / sampleRate) + this.flut * 20) / 12);
+      }
       const per = sampleRate / f0;
       if (this.t >= this.pulse[0]) { this.addGrain(this.t, Math.sqrt(per) * (p.harmony ? 0.75 : 1)); this.pulse[0] += per; if (this.pulse[0] < this.t) this.pulse[0] = this.t + per; }
       if (p.harmony) {
@@ -328,38 +353,42 @@ registerProcessor('tap', Tap);
 <script>
 const $ = id => document.getElementById(id);
 const app = $('app');
-const ids = ['note','tone','size','metal','mix','vol','ring','freq','grit','thrOn','thrOff','hold'];
+const ids = ['note','stick','tone','size','metal','speed','mix','vol','ring','freq','grit','thrOn','thrOff','hold'];
 const NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
-const SCALES = { chromatic: [0,1,2,3,4,5,6,7,8,9,10,11], major: [0,2,4,5,7,9,11], minor: [0,2,3,5,7,8,10] };
+// robot-style note sets: one note in octaves, a two-note 'beep-boop', or three-note chords
+const SCALES = { root: [0], power: [0, 7], major: [0, 4, 7], minor: [0, 3, 7] };
+const SCALE_NAMES = { root: 'root', power: '+ fifth', major: 'major', minor: 'minor' };
 const noteName = m => NAMES[m % 12] + (Math.floor(m / 12) - 1);
 const mtof = m => 440 * Math.pow(2, (m - 69) / 12);
 const fmt = {
-  note: v => pitch === 'snap' ? NAMES[v % 12] + ' ' + scale : noteName(+v) + ' · ' + Math.round(mtof(v)) + ' Hz',
+  note: v => pitch === 'snap' ? NAMES[v % 12] + ' ' + SCALE_NAMES[scale] : noteName(+v) + ' · ' + Math.round(mtof(v)) + ' Hz',
   tone: v => v < 34 ? 'Warm' : v < 67 ? 'Clear' : 'Bright',
   size: v => v == 0 ? 'Human' : v < 0 ? 'Bigger ' + (-v) : 'Smaller ' + v,
+  stick: v => v + ' ms', speed: v => v == 100 ? 'Normal' : v + '%',
   thrOn: v => v + ' dB', thrOff: v => v + ' dB', hold: v => (v / 10).toFixed(1) + ' s',
   metal: v => v + '%', mix: v => v + '%', vol: v => v + '%', ring: v => v + '%', freq: v => v + ' Hz', grit: v => v + '%'
 };
-let wave = 'sine', mode = 'rec', loop = true, pitch = 'mono', scale = 'major', harmony = 0, repLoop = false;
+let wave = 'sine', mode = 'rec', loop = true, pitch = 'mono', scale = 'power', harmony = 0, repLoop = false;
 const STORE = 'robotVoice3';
 try {
   const s = JSON.parse(localStorage.getItem(STORE) || '{}');
+  if (s.ver !== 4) { delete s.thrOn; delete s.thrOff; delete s.scale; }  // new defaults
   ids.forEach(k => { if (s[k] != null) $(k).value = s[k]; });
   if (s.wave) wave = s.wave; if (s.mode) mode = s.mode; if (s.loop != null) loop = s.loop;
-  if (s.pitch) pitch = s.pitch; if (s.scale) scale = s.scale; if (s.harmony != null) harmony = s.harmony; if (s.repLoop != null) repLoop = s.repLoop;
+  if (s.pitch) pitch = s.pitch; if (s.scale && SCALES[s.scale]) scale = s.scale; if (s.harmony != null) harmony = s.harmony; if (s.repLoop != null) repLoop = s.repLoop;
 } catch (e) {}
 function save() {
-  try { const s = { wave, mode, loop, pitch, scale, harmony, repLoop }; ids.forEach(k => s[k] = $(k).value); localStorage.setItem(STORE, JSON.stringify(s)); } catch (e) {}
+  try { const s = { ver: 4, wave, mode, loop, pitch, scale, harmony, repLoop }; ids.forEach(k => s[k] = $(k).value); localStorage.setItem(STORE, JSON.stringify(s)); } catch (e) {}
 }
 
 /* ---------- effect chain (works on live and offline contexts) ---------- */
 const WORKLET_URL = URL.createObjectURL(new Blob([$('robotWorklet').textContent], { type: 'application/javascript' }));
 function params() {
   const p = {}; ids.forEach(k => p[k] = +$(k).value);
-  Object.assign(p, { wave, pitch, harmony, scale: SCALES[scale] });
+  Object.assign(p, { wave, pitch, harmony, scale: SCALES[scale], comp: (typeof playing !== 'undefined' && playing) ? 100 / p.speed : 1 });
   return p;
 }
-function workletParams(p) { return { pitch: p.pitch, note: p.note, scale: p.scale, tone: p.tone, size: p.size, harmony: p.harmony }; }
+function workletParams(p) { return { pitch: p.pitch, note: p.note, scale: p.scale, stick: p.stick, tone: p.tone, size: p.size, harmony: p.harmony, comp: p.comp || 1 }; }
 function curve(amount) {
   const n = 1024, c = new Float32Array(n), k = amount * 0.6;
   for (let i = 0; i < n; i++) { const x = i * 2 / n - 1; c[i] = k === 0 ? x : (1 + k) * x / (1 + k * Math.abs(x)); }
@@ -509,8 +538,46 @@ function showTake(t) {
   scr.classList.remove('flash'); void scr.offsetWidth; if (t) scr.classList.add('flash');
 }
 
+/* ---------- parrot squawk ("craw!") ----------
+   A rough, falling squawk: a buzzy source swept 1.2 -> 1.9 -> 0.8 kHz, chopped at ~40 Hz for rasp,
+   through two beak-like resonances. Each one is a little different. */
+function biquad(x, type, f, Q, sr) {
+  const w = 2 * Math.PI * f / sr, al = Math.sin(w) / (2 * Q), c = Math.cos(w);
+  let b0, b1, b2; const a0 = 1 + al, a1 = -2 * c, a2 = 1 - al;
+  if (type === 'bp') { b0 = al; b1 = 0; b2 = -al; } else { b0 = (1 + c) / 2; b1 = -(1 + c); b2 = (1 + c) / 2; }
+  const y = new Float32Array(x.length); let x1 = 0, x2 = 0, y1 = 0, y2 = 0;
+  for (let i = 0; i < x.length; i++) { const v = (b0 * x[i] + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2) / a0; x2 = x1; x1 = x[i]; y2 = y1; y1 = v; y[i] = v; }
+  return y;
+}
+function makeCraw(sr) {
+  const dur = 0.3 + Math.random() * 0.12, n = Math.floor(dur * sr), src = new Float32Array(n);
+  const fA = 1100 + Math.random() * 250, fB = fA * (1.45 + Math.random() * 0.2), fC = fA * (0.62 + Math.random() * 0.1), chop = 34 + Math.random() * 14;
+  let ph = 0;
+  for (let i = 0; i < n; i++) {
+    const t = i / n;
+    const f = t < 0.22 ? fA + (fB - fA) * (t / 0.22) : fB + (fC - fB) * Math.pow((t - 0.22) / 0.78, 0.7);
+    ph += f / sr; ph -= Math.floor(ph);
+    const saw = 2 * ph - 1, noise = Math.random() * 2 - 1;
+    const rasp = 0.55 + 0.45 * Math.sign(Math.sin(2 * Math.PI * chop * i / sr));
+    const env = Math.min(1, i / (0.012 * sr)) * Math.pow(1 - t, 0.6);
+    src[i] = (saw * 0.75 + noise * 0.35) * rasp * env;
+  }
+  const a = biquad(src, 'bp', 1600 + Math.random() * 300, 3, sr), b = biquad(src, 'bp', 3200 + Math.random() * 400, 4, sr);
+  const hp = biquad(src, 'hp', 500, 0.7, sr);
+  const out = new Float32Array(n); let peak = 0;
+  for (let i = 0; i < n; i++) { out[i] = a[i] * 1.2 + b[i] * 0.8 + hp[i] * 0.15; peak = Math.max(peak, Math.abs(out[i])); }
+  for (let i = 0; i < n; i++) out[i] *= 0.6 / (peak || 1);
+  const buf = ctx.createBuffer(1, n, sr); buf.getChannelData(0).set(out);
+  return buf;
+}
+function squawk(at) {
+  const s = ctx.createBufferSource(); s.buffer = makeCraw(ctx.sampleRate);
+  s.connect(chain.out); s.start(at);
+  return s;
+}
+
 /* ---------- playback ---------- */
-let playing = null;                           // { src, t0, take, loop }
+let playing = null;                           // { src, t0, take, loop, extras }
 async function playTake(t, loopIt, onDone) {
   stopPlayback();
   session('playback');
@@ -518,20 +585,41 @@ async function playTake(t, loopIt, onDone) {
   const src = ctx.createBufferSource();
   src.buffer = t.buffer; src.loop = loopIt;
   src.connect(chain.input);
-  const me = { src, t0: ctx.currentTime + 0.02, take: t, loop: loopIt };
-  src.onended = () => { if (playing !== me) return; playing = null; src.disconnect(); onDone && onDone(); };
+  const rate = +$('speed').value / 100;
+  src.playbackRate.value = rate;
+  // Parrot: "craw!" before the line, and after it when it plays once
+  const parrot = pitch === 'parrot', now = ctx.currentTime + 0.02, extras = [];
+  let start = now;
+  if (parrot) { const c = squawk(now); extras.push(c); start = now + c.buffer.duration + 0.12; }
+  const me = { src, t0: start, offset: 0, rate, take: t, loop: loopIt, extras };
+  const finish = () => { if (playing !== me) return; playing = null; src.disconnect(); if (chain) setChain(chain, params(), false); onDone && onDone(); };
+  src.onended = () => {
+    if (playing !== me) return;
+    if (parrot && !me.loop) { const c = squawk(ctx.currentTime + 0.15); extras.push(c); c.onended = finish; }
+    else finish();
+  };
   playing = me;
-  src.start(me.t0);
+  if (chain) setChain(chain, params(), false);
+  src.start(start);
   lockScreen();
 }
 function stopPlayback() {
   if (!playing) return;
   const p = playing; playing = null;
   p.src.onended = null; try { p.src.stop(); } catch (e) {} p.src.disconnect();
+  (p.extras || []).forEach(c => { c.onended = null; try { c.stop(); } catch (e) {} c.disconnect(); });
+  if (chain) setChain(chain, params(), false);
 }
+function setSpeed() {
+  if (!playing) return;
+  const rate = +$('speed').value / 100;
+  playing.offset = playPosRaw(); playing.t0 = ctx.currentTime; playing.rate = rate;
+  playing.src.playbackRate.setValueAtTime(rate, ctx.currentTime);
+}
+function playPosRaw() { return playing ? playing.offset + Math.max(0, ctx.currentTime - playing.t0) * playing.rate : 0; }
 function playPos() {
   if (!playing) return 0;
-  const t = Math.max(0, ctx.currentTime - playing.t0), d = playing.take.dur;
+  const t = playPosRaw(), d = playing.take.dur;
   return playing.loop ? t % d : Math.min(t, d);
 }
 
@@ -637,11 +725,17 @@ async function saveRobot() {
   const src0 = current.buffer;
   $('saveBtn').disabled = true; $('msg').textContent = 'Rendering take ' + current.id + '…';
   try {
-    const rate = src0.sampleRate, len = Math.ceil((src0.duration + 0.5) * rate);
+    const sp = +$('speed').value / 100;
+    const rate = src0.sampleRate, len = Math.ceil((src0.duration / sp + 0.5 + (pitch === 'parrot' ? 1.2 : 0)) * rate);
     const off = new (window.OfflineAudioContext || window.webkitOfflineAudioContext)(1, len, rate);
     if (off.audioWorklet) { try { await off.audioWorklet.addModule(WORKLET_URL); } catch (e) {} }
-    const n = buildChain(off, params());
-    const src = off.createBufferSource(); src.buffer = src0; src.connect(n.input); src.start();
+    const n = buildChain(off, Object.assign(params(), { comp: 1 / sp }));
+    const src = off.createBufferSource(); src.buffer = src0; src.playbackRate.value = sp; src.connect(n.input);
+    if (pitch === 'parrot') {
+      const c1 = off.createBufferSource(), c2 = off.createBufferSource();
+      c1.buffer = makeCraw(rate); c2.buffer = makeCraw(rate); c1.connect(n.out); c2.connect(n.out);
+      const gap = c1.buffer.duration + 0.12; c1.start(0); src.start(gap); c2.start(gap + src0.duration / sp + 0.15);
+    } else src.start();
     const rendered = await off.startRendering();
     const file = new File([wav(rendered)], 'robot-voice-take-' + current.id + '.wav', { type: 'audio/wav' });
     if (navigator.canShare && navigator.canShare({ files: [file] })) {
@@ -664,8 +758,10 @@ async function saveRobot() {
 const MAX_S = 20, MIN_VOICE_S = 0.2, WINDOW_S = 0.5, TAIL_S2 = 0.1;
 let repOn = false, repState = 'off';
 let win = [], take = [], takePeaks = [], quietS = 0, voicedS = 0, takeS = 0, lastLoudLen = 0, lastChunk = null;
-function meterPos(db) { return Math.max(0, Math.min(100, (db + 80) / 80 * 100)); }
-function drawMeter(db) { $('repBar').style.width = meterPos(db) + '%'; $('meter').classList.toggle('hot', db > +$('thrOn').value); }
+function meterPos(db) { return Math.max(0, Math.min(100, (db + 70) / 60 * 100)); }
+let meterAvg = -100, meterNow = -100;
+function drawMeter(db, now) { meterAvg = db; meterNow = now == null ? db : now; }
+function paintMeter() { $('repBar').style.width = meterPos(meterAvg) + '%'; $('repInst').style.width = meterPos(meterNow) + '%'; $('meter').classList.toggle('hot', meterAvg > +$('thrOn').value); }
 function placeMarkers() { $('mOn').style.left = meterPos(+$('thrOn').value) + '%'; $('mOff').style.left = meterPos(+$('thrOff').value) + '%'; }
 function windowDb() { let e = 0, n = 0; for (const w of win) { e += w.e * w.n; n += w.n; } return 10 * Math.log10(e / (n || 1) + 1e-12); }
 function repUI() {
@@ -702,7 +798,7 @@ function onChunk(chunk) {
   win.push({ e: e / n, n, raw, chunk, m });
   while (win.length * dur > WINDOW_S) win.shift();
   const db = windowDb();
-  drawMeter(db);
+  drawMeter(db, raw);
   const on = +$('thrOn').value, off = +$('thrOff').value, hold = +$('hold').value / 10;
   if (repState === 'listening') {
     // start: half-second average above the start level, with real voice in it (not one click)
@@ -759,6 +855,7 @@ function bars(peaks, count, color, from, to, x0 = 0) {
   }
 }
 function frame() {
+  if (mode === 'repeat') paintMeter();
   const W = cv.width, H = cv.height;
   g.clearRect(0, 0, W, H);
   const accent = cssVar('--wave') || '#f2a93b', dimc = cssVar('--wave-dim') || '#5a4a30';
@@ -801,10 +898,11 @@ function render() {
   const press = (sel, key, val) => document.querySelectorAll(sel).forEach(b => b.setAttribute('aria-pressed', String(b.dataset[key]) === String(val)));
   press('[data-wave]', 'wave', wave); press('[data-pitch]', 'pitch', pitch); press('[data-scale]', 'scale', scale); press('[data-harmony]', 'harmony', harmony);
   document.querySelectorAll('[data-robot]').forEach(el => el.hidden = pitch === 'off');
-  $('scaleRow').hidden = pitch !== 'snap';
+  $('scaleRow').hidden = $('stickFader').hidden = pitch !== 'snap';
   $('noteL').textContent = pitch === 'snap' ? 'Key' : 'Note';
+  if (pitch === 'parrot') $('noteFader').hidden = true;
   $('modeRec').setAttribute('aria-pressed', mode === 'rec'); $('modeRep').setAttribute('aria-pressed', mode === 'repeat'); $('modeLive').setAttribute('aria-pressed', mode === 'live');
-  $('recPanel').hidden = mode !== 'rec'; $('repPanel').hidden = mode !== 'repeat'; $('livePanel').hidden = mode !== 'live';
+  $('recPanel').hidden = mode !== 'rec'; $('repPanel').hidden = $('levels').hidden = mode !== 'repeat'; $('livePanel').hidden = mode !== 'live';
   $('loopBtn').setAttribute('aria-pressed', loop); $('repLoop').setAttribute('aria-pressed', repLoop); placeMarkers();
   if (chain) setChain(chain, params(), true);
   save();
@@ -834,6 +932,7 @@ $('repLoop').onclick = () => { repLoop = !repLoop; if (playing && mode === 'repe
 // keep the silence level at least 3 dB under the start level
 $('thrOn').addEventListener('input', () => { if (+$('thrOff').value > +$('thrOn').value - 3) $('thrOff').value = +$('thrOn').value - 3; });
 $('thrOff').addEventListener('input', () => { if (+$('thrOff').value > +$('thrOn').value - 3) $('thrOn').value = +$('thrOff').value + 3; });
+$('speed').addEventListener('input', setSpeed);
 ids.forEach(k => $(k).addEventListener('input', render));
 document.querySelectorAll('[data-wave]').forEach(b => b.addEventListener('click', () => { wave = b.dataset.wave; render(); }));
 document.querySelectorAll('[data-pitch]').forEach(b => b.addEventListener('click', () => { pitch = b.dataset.pitch; render(); }));
