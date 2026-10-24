@@ -234,7 +234,6 @@ class RobotVoice extends AudioWorkletProcessor {
     this.pulse = [N, N];                                        // next pulse time for main voice and harmony voice
     this.grain = new Float64Array(N); this.snapF = 0; this.lastF = 0;
     this.re = new Float64Array(N); this.im = new Float64Array(N); this.env = new Float64Array(N / 2 + 1);
-    this.xr = new Float64Array(N); this.xi = new Float64Array(N); this.venv = new Float64Array(N / 2 + 1);
   }
   detect(x) { // YIN on the current frame, decimated by 2
     const n = N >> 1, rate = sampleRate / 2, d = new Float64Array(n);
@@ -264,7 +263,6 @@ class RobotVoice extends AudioWorkletProcessor {
     for (let i = 0; i < N; i++) { re[i] = x[i] * HANN[i]; im[i] = 0; e2 += re[i] * re[i]; }
     const rms = Math.sqrt(e2 / N);
     fft(re, im);
-    if (p.pitch === 'mock') { this.xr.set(re); this.xi.set(im); }   // keep the real spectrum for Mock
     let hf = 0, tot = 1e-12;
     const binHz = sampleRate / N;
     for (let k = 0; k <= N / 2; k++) { const pw = re[k] * re[k] + im[k] * im[k]; tot += pw; if (k * binHz > 3000) hf += pw; }
@@ -277,43 +275,7 @@ class RobotVoice extends AudioWorkletProcessor {
     fft(re, im);
     for (let k = 0; k <= N / 2; k++) env[k] = Math.exp(re[k]);
     let mockGain = 1;
-    if (p.pitch === 'mock') {
-      // Mock keeps YOUR voice (its real pitch, wobble and texture) and only swaps the mouth shape:
-      // the spectrum is divided by your vowel shape and multiplied by "m"/"eh". No resynthesis, no pitch snapping.
-      this.venv.set(env);
-      mockGain = this.mockEnvelope(rms, binHz);
-      const { xr, xi, venv } = this;
-      let ein = 1e-12, eout = 1e-12;
-      for (let k = 0; k <= N / 2; k++) {
-        const r = env[k] / (venv[k] + 1e-6), pw = xr[k] * xr[k] + xi[k] * xi[k];
-        ein += pw; eout += pw * r * r;
-        re[k] = xr[k] * r; im[k] = xi[k] * r;
-      }
-      // match loudness, then apply the held meh level (bridges dips, capped so noise isn't boosted much)
-      const hold = Math.min(3, (this.mockLevel || 0) / (rms + 1e-6));
-      const g = Math.sqrt(ein / eout) * hold * mockGain;
-      for (let k = 0; k <= N / 2; k++) { re[k] *= g; im[k] *= g; if (k > 0 && k < N / 2) { re[N - k] = re[k]; im[N - k] = -im[k]; } }
-      // inverse FFT via conjugation, then window and overlap-add into the output
-      for (let k = 0; k < N; k++) im[k] = -im[k];
-      fft(re, im);
-      const a = this.acc, base = this.t;
-      for (let i = 0; i < N; i++) a[(base + i) % ACC] += re[i] / N * HANN[i] / 1.5;
-      // Filler: inside a held meh, a stop consonant (p, t, k) leaves almost no voice to reshape.
-      // Fill just that gap with a soft "eh" hum at your last pitch, so the meh doesn't break up.
-      const f = rms > 0.003 ? this.detect(x) : 0;
-      if (f) this.lastF = this.lastF ? this.lastF * 0.5 + f * 0.5 : f;
-      const real = Math.min(this.mockLevel || 0, 3 * rms), fill = Math.max(0, (this.mockLevel || 0) - real);
-      this.fillOn = fill > 1e-5 && this.lastF > 0;
-      if (this.fillOn) {
-        for (let k = 0; k <= N / 2; k++) { const fq = k * binHz; re[k] = env[k] / (1 + (fq / 1300) ** 2); im[k] = 0; if (k > 0 && k < N / 2) { re[N - k] = re[k]; im[N - k] = 0; } }
-        fft(re, im);
-        let gE = 1e-12;
-        for (let i = 0; i < N; i++) { const v = re[(i + N / 2) % N] * HANN[i]; this.grain[i] = v; gE += v * v; }
-        const sc = fill * mockGain / Math.sqrt(gE) * 1.6;
-        for (let i = 0; i < N; i++) this.grain[i] *= sc;
-      }
-      return;
-    }
+    if (p.pitch === 'mock') mockGain = this.mockEnvelope(rms, binHz);
     // build zero-phase grain: envelope (shifted by Size) x soft source rolloff (Tone)
     const parrot = p.pitch === 'parrot', mock = p.pitch === 'mock';
     // parrot: a tiny beak-and-throat (resonances ~9 semitones up), bright and nasal; mock: a soft, human source
@@ -386,9 +348,9 @@ class RobotVoice extends AudioWorkletProcessor {
     if (onset) { this.since = 0; this.locMax = sm; this.dip = false; this.dipMin = 1; this.sylPeak = sm; }
     this.sylPeak = Math.max(this.sylPeak || 0, sm);
     // level: follow the voice, but hold each meh for its first 160 ms, then release quickly (~45 ms)
-    const floor = this.since < 0.16 && !this.low ? 0.75 * (this.sylPeak || 0) : 0;
+    const floor = this.since < 0.16 ? 0.75 * (this.sylPeak || 0) : 0;
     const target = Math.max(sm, floor);
-    const rel = Math.exp(-hop / (this.low ? 0.02 : 0.045));   // end crisply when you actually stop
+    const rel = Math.exp(-hop / 0.045);
     this.mockLevel = target > (this.mockLevel || 0) ? target : Math.max(target, this.mockLevel * rel);
     if (!this.mockEH) {
       const shape = F => { const e = new Float64Array(N / 2 + 1); for (let k = 0; k <= N / 2; k++) { const f = k * binHz; let v = 1e-4; for (const [fc, bw, g] of F) { const r = f / fc; v += g / Math.sqrt((1 - r * r) ** 2 + (f * bw / (fc * fc)) ** 2); } e[k] = v; } return e; };
@@ -416,8 +378,7 @@ class RobotVoice extends AudioWorkletProcessor {
         f0 = (this.parF || 400) * Math.pow(2, (0.45 * Math.sin(2 * Math.PI * 7.5 * this.t / sampleRate) + this.flut * 20) / 12);
       }
       const per = sampleRate / f0;
-      if (p.pitch === 'mock') f0 = this.lastF || 150;
-      if ((p.pitch !== 'mock' || this.fillOn) && this.t >= this.pulse[0]) {
+      if (this.t >= this.pulse[0]) {
         // parrot: uneven, alternating pulses give the throaty rasp; mock: tiny natural wobble so it sounds human
         let amp = 1, jit = 0;
         if (p.pitch === 'parrot') { this.alt = !this.alt; amp = (this.alt ? 1 : 0.62) * (0.85 + Math.random() * 0.3); jit = (Math.random() - 0.5) * 0.1; }
@@ -425,7 +386,7 @@ class RobotVoice extends AudioWorkletProcessor {
         this.addGrain(this.t, Math.sqrt(per) * amp * (p.harmony ? 0.75 : 1));
         this.pulse[0] += per * (1 + jit); if (this.pulse[0] < this.t) this.pulse[0] = this.t + per;
       }
-      if (p.harmony && p.pitch !== 'mock') {
+      if (p.harmony) {
         const per2 = per * (p.harmony === 1 ? 2 : 1.5);
         if (this.t >= this.pulse[1]) { this.addGrain(this.t, Math.sqrt(per2) * 0.5); this.pulse[1] += per2; if (this.pulse[1] < this.t) this.pulse[1] = this.t + per2; }
       } else this.pulse[1] = this.t;
