@@ -312,11 +312,11 @@ class RobotVoice extends AudioWorkletProcessor {
       // follow the voice's own melody at its natural pitch
       const f = this.detect(x);
       const jump = f && this.lastIn ? f / this.lastIn : 0;
-      this.cons = jump > 0.9 && jump < 1.11 ? (this.cons || 0) + 1 : 0;   // trust a pitch only after 3 steady readings
-      if (f && this.cons >= 2) {
+      this.cons = jump > 0.89 && jump < 1.12 ? (this.cons || 0) + 1 : 0;   // a voice never moves 2 semitones in 5 ms: skip tracker slips
+      if (f && f > 65 && f < 450 && this.cons >= (this.hadF ? 1 : 3)) {   // first note needs 4 steady readings
         this.fAvg = this.fAvg ? this.fAvg * 0.99 + f * 0.01 : f;
-        const target = this.fAvg * Math.pow(f / this.fAvg, 1.1);   // your own pitch, just a touch more sing-song
-        this.mockF = this.mockF ? this.mockF * 0.6 + target * 0.4 : target;
+        this.mockF = this.fAvg * Math.pow(f / this.fAvg, 1.1);     // your own pitch, just a touch more sing-song
+        if (!this.hadF) { this.hadF = true; this.glide = this.mockF; }   // start right on your first note
       }
       if (f) this.lastIn = f;
       if (!this.mockF) this.mockF = 180;
@@ -372,7 +372,9 @@ class RobotVoice extends AudioWorkletProcessor {
       // shift input in
       this.ring[this.w] = inp ? inp[i] : 0; this.w = (this.w + 1) % N;
       if (++this.hopCount >= HOP) { this.hopCount = 0; this.analyse(); }
-      let f0 = p.pitch === 'snap' ? (this.snapF || 130.8) : p.pitch === 'mock' ? (this.mockF || 180) : 440 * Math.pow(2, (p.note - 69) / 12);
+      // mock glides smoothly (~70 ms) toward the tracked pitch every sample, so it never steps or snaps
+      if (p.pitch === 'mock') this.glide = this.glide && this.hadF ? this.glide + (this.mockF - this.glide) * 0.0003 : (this.mockF || 180);
+      let f0 = p.pitch === 'snap' ? (this.snapF || 130.8) : p.pitch === 'mock' ? this.glide : 440 * Math.pow(2, (p.note - 69) / 12);
       if (p.pitch === 'parrot') { // warble: fast vibrato plus a little random flutter
         this.flut = (this.flut || 0) * 0.9995 + (Math.random() - 0.5) * 0.004;
         f0 = (this.parF || 400) * Math.pow(2, (0.45 * Math.sin(2 * Math.PI * 7.5 * this.t / sampleRate) + this.flut * 20) / 12);
