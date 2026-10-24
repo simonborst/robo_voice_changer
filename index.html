@@ -38,7 +38,15 @@ h1{font:700 26px/1 var(--display);letter-spacing:.06em;text-transform:uppercase;
 .modes button{flex:1;font:700 13px var(--display);letter-spacing:.12em;text-transform:uppercase;color:var(--dim);background:transparent;border:0;border-radius:6px;padding:10px 4px}
 .modes button[aria-pressed=true]{background:var(--fg);color:var(--bg)}
 
-.screen{background:#0b0d0f;border:1px solid var(--line);border-radius:6px;padding:12px;display:flex;flex-direction:column;gap:8px}
+.screen{--wave:var(--accent);--wave-dim:#5a4a30;background:#0b0d0f;border:1px solid var(--line);border-radius:6px;padding:12px;display:flex;flex-direction:column;gap:8px;transition:background .4s,border-color .4s}
+.screen{position:sticky;top:max(8px, env(safe-area-inset-top, 0px));z-index:5;box-shadow:0 8px 16px -8px #000c}
+body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset-top, 0px);z-index:10;background:var(--bg)}
+.screen.has-take{--wave:hsl(var(--hue) 80% 64%);--wave-dim:hsl(var(--hue) 30% 32%);background:hsl(var(--hue) 40% 10%);border-color:hsl(var(--hue) 45% 30%)}
+.take{font:700 12px var(--display);letter-spacing:.14em;text-transform:uppercase;color:var(--wave);margin-left:auto;margin-right:12px}
+.take:empty{display:none}
+.screen.flash{animation:flash .6s ease-out}
+@keyframes flash{from{box-shadow:0 0 0 3px var(--wave)}to{box-shadow:0 0 0 0 transparent}}
+@media (prefers-reduced-motion:reduce){.screen.flash{animation:none}}
 .status{display:flex;justify-content:space-between;font-size:12px;letter-spacing:.1em;text-transform:uppercase}
 .lamp{display:inline-flex;align-items:center;gap:8px;color:var(--dim)}
 .lamp i{width:9px;height:9px;border-radius:50%;background:var(--line)}
@@ -48,7 +56,7 @@ h1{font:700 26px/1 var(--display);letter-spacing:.06em;text-transform:uppercase;
 @keyframes blink{50%{opacity:.25}}
 @media (prefers-reduced-motion:reduce){.rec .lamp i{animation:none}}
 #info{font-variant-numeric:tabular-nums;color:var(--dim)}
-canvas{width:100%;height:64px;display:block}
+canvas{width:100%;height:72px;display:block}
 #msg{font-size:12px;color:var(--dim);min-height:1.4em}
 
 .rack{display:flex;flex-direction:column;gap:14px}
@@ -96,8 +104,8 @@ button:focus-visible{outline:2px solid var(--fg);outline-offset:2px}
     <button id="modeLive" aria-pressed="false">Live</button>
   </div>
 
-  <div class="screen">
-    <div class="status"><span class="lamp"><i></i><span id="state">Standby</span></span><span id="info">0:00</span></div>
+  <div class="screen" id="screen">
+    <div class="status"><span class="lamp"><i></i><span id="state">Standby</span></span><span class="take" id="takeNo"></span><span id="info"></span></div>
     <canvas id="scope" width="800" height="128"></canvas>
     <div id="msg"></div>
   </div>
@@ -303,14 +311,14 @@ class RobotVoice extends AudioWorkletProcessor {
 }
 registerProcessor('robot-voice', RobotVoice);
 
-// Mic tap for Repeat mode: sends the raw mic audio to the page in 1024-sample chunks
+// Mic tap: sends the raw mic audio to the page in 512-sample chunks (about 11 ms)
 class Tap extends AudioWorkletProcessor {
-  constructor() { super(); this.buf = new Float32Array(1024); this.n = 0; }
+  constructor() { super(); this.buf = new Float32Array(512); this.n = 0; }
   process(inputs) {
     const ch = inputs[0] && inputs[0][0];
     if (ch) for (let i = 0; i < ch.length; i++) {
       this.buf[this.n++] = ch[i];
-      if (this.n === this.buf.length) { this.port.postMessage(this.buf); this.buf = new Float32Array(1024); this.n = 0; }
+      if (this.n === this.buf.length) { this.port.postMessage(this.buf); this.buf = new Float32Array(512); this.n = 0; }
     }
     return true;
   }
@@ -417,20 +425,24 @@ function setChain(n, p, smooth) {
 }
 
 /* ---------- shared engine ---------- */
-let ctx, chain, wakeLock, raf, scopeSrc = null;
-// iPhone sends audio to the quiet earpiece while the mic is open, so only use the recording session while recording or live
+let ctx, chain, wakeLock;
+const wait = ms => new Promise(r => setTimeout(r, ms));
+// iPhone sends audio to the quiet earpiece while the mic is open, so the recording session is only used while the mic is on
 function session(type) { if (navigator.audioSession) { try { navigator.audioSession.type = type; } catch (e) {} } }
-async function engine(type) {
-  session(type || 'play-and-record');
-  if (!ctx) {
+let enginePromise = null;
+function engine() {
+  if (!enginePromise) enginePromise = (async () => {
     ctx = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: 'interactive' });
     if (ctx.audioWorklet) { try { await ctx.audioWorklet.addModule(WORKLET_URL); } catch (e) {} }
     chain = buildChain(ctx, params());
     if (!chain.robot) $('msg').textContent = 'This browser cannot run Monotone or Snap. Natural mode still works.';
     ctx.onstatechange = () => { if (busy() && ctx.state !== 'running') ctx.resume().catch(() => {}); };
-  }
-  await ctx.resume();
+  })();
+  return enginePromise.then(() => ctx.resume());
 }
+// warm up the audio engine on the first touch, so the first Record press is instant
+document.addEventListener('pointerdown', () => { engine().catch(() => {}); }, { once: true, capture: true });
+
 async function getMic() {
   if (!window.isSecureContext || !navigator.mediaDevices) throw Object.assign(new Error('insecure'), { name: 'Insecure' });
   return navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
@@ -449,13 +461,86 @@ function setStatus(cls, label, msg) {
   $('state').textContent = label;
   if (msg != null) $('msg').textContent = msg;
 }
-const clock = s => Math.floor(s / 60) + ':' + String(Math.floor(s % 60)).padStart(2, '0');
+const clock = s => Math.floor(s / 60) + ':' + (s % 60).toFixed(1).padStart(4, '0');
+
+/* ---------- microphone capture (Record and Repeat) ----------
+   Raw samples come straight from the mic through a tiny worklet: no encoder, no decoding,
+   so a take is ready to play the moment recording stops and is never cut short. */
+let mic = null;
+async function micOpen(onChunk) {
+  session('play-and-record');
+  const stream = await getMic();
+  const src = ctx.createMediaStreamSource(stream);
+  const tap = new AudioWorkletNode(ctx, 'tap', { numberOfInputs: 1, numberOfOutputs: 1, channelCount: 1, channelCountMode: 'explicit' });
+  const sink = ctx.createGain(); sink.gain.value = 0;
+  src.connect(tap); tap.connect(sink); sink.connect(ctx.destination);
+  tap.port.onmessage = e => onChunk(e.data);
+  mic = { stream, src, tap, sink };
+}
+function micClose() {
+  if (!mic) return;
+  mic.tap.port.onmessage = null;
+  try { mic.src.disconnect(); mic.tap.disconnect(); mic.sink.disconnect(); } catch (e) {}
+  mic.stream.getTracks().forEach(t => t.stop());
+  mic = null;
+}
+
+/* ---------- takes ---------- */
+let takeCount = 0, current = null;           // current = { id, hue, buffer, peaks, dur }
+function makeTake(chunks, keepLen) {
+  const use = chunks.slice(0, keepLen == null ? chunks.length : keepLen);
+  const len = use.reduce((n, c) => n + c.length, 0);
+  if (!len) return null;
+  const buffer = ctx.createBuffer(1, len, ctx.sampleRate), d = buffer.getChannelData(0);
+  let o = 0; for (const c of use) { d.set(c, o); o += c.length; }
+  let peak = 0; for (let i = 0; i < len; i++) { const a = Math.abs(d[i]); if (a > peak) peak = a; }
+  const k = peak > 0.001 ? 0.95 / peak : 1;
+  const f = Math.min(240, len >> 2);
+  for (let i = 0; i < len; i++) d[i] *= k;
+  for (let i = 0; i < f; i++) { d[i] *= i / f; d[len - 1 - i] *= i / f; }
+  const peaks = use.map(c => { let m = 0; for (let i = 0; i < c.length; i++) { const a = Math.abs(c[i]); if (a > m) m = a; } return Math.min(1, m * k); });
+  takeCount++;
+  return { id: takeCount, hue: (takeCount * 137.5 + 20) % 360, buffer, peaks, dur: buffer.duration };
+}
+function showTake(t) {
+  const scr = $('screen');
+  if (t) { scr.style.setProperty('--hue', t.hue); scr.classList.add('has-take'); $('takeNo').textContent = 'Take ' + t.id; }
+  else { scr.classList.remove('has-take'); $('takeNo').textContent = ''; }
+  scr.classList.remove('flash'); void scr.offsetWidth; if (t) scr.classList.add('flash');
+}
+
+/* ---------- playback ---------- */
+let playing = null;                           // { src, t0, take, loop }
+async function playTake(t, loopIt, onDone) {
+  stopPlayback();
+  session('playback');
+  await ctx.resume();
+  const src = ctx.createBufferSource();
+  src.buffer = t.buffer; src.loop = loopIt;
+  src.connect(chain.input);
+  const me = { src, t0: ctx.currentTime + 0.02, take: t, loop: loopIt };
+  src.onended = () => { if (playing !== me) return; playing = null; src.disconnect(); onDone && onDone(); };
+  playing = me;
+  src.start(me.t0);
+  lockScreen();
+}
+function stopPlayback() {
+  if (!playing) return;
+  const p = playing; playing = null;
+  p.src.onended = null; try { p.src.stop(); } catch (e) {} p.src.disconnect();
+}
+function playPos() {
+  if (!playing) return 0;
+  const t = Math.max(0, ctx.currentTime - playing.t0), d = playing.take.dur;
+  return playing.loop ? t % d : Math.min(t, d);
+}
 
 /* ---------- live mode ---------- */
 let liveStream, liveSrc;
 async function startLive() {
   try {
     await engine();
+    session('play-and-record');
     liveStream = await getMic();
     liveSrc = ctx.createMediaStreamSource(liveStream);
     liveSrc.connect(chain.input);
@@ -464,7 +549,7 @@ async function startLive() {
     const lat = ((ctx.baseLatency || 0) + (ctx.outputLatency || 0)) * 1000 + (pitch !== 'off' ? 21 : 0);
     $('info').textContent = lat ? Math.round(lat) + ' ms' : '';
     liveStream.getAudioTracks()[0].onended = () => { if (liveStream) { stopLive(); setStatus('err', 'Mic lost', 'Another app took the microphone. Tap Start again.'); } };
-    lockScreen(); scope(chain.analyser);
+    lockScreen(); view = 'live';
   } catch (e) { stopLive(); setStatus('err', 'Error', micError(e)); }
 }
 function stopLive() {
@@ -474,86 +559,66 @@ function stopLive() {
   $('liveBtn').textContent = 'Start'; $('liveBtn').classList.remove('stop');
   $('info').textContent = '';
   setStatus('', 'Standby', 'Plug in headphones, then tap Start.');
-  unlockScreen(); scope(null);
+  unlockScreen(); view = 'idle';
 }
 
-/* ---------- record & replay mode ---------- */
-let recorder, recStream, recTimer, recStart, recBuffer = null, player = null, playStart = 0;
-function pickType() {
-  const types = ['audio/mp4', 'audio/webm;codecs=opus', 'audio/webm', 'audio/ogg'];
-  return window.MediaRecorder && MediaRecorder.isTypeSupported ? types.find(t => MediaRecorder.isTypeSupported(t)) || '' : '';
+/* ---------- record mode ---------- */
+// states: idle | arming | recording | playing
+let recState = 'idle', recChunks = [], recPeaks = [], recSamples = 0;
+function recUI() {
+  const b = $('recBtn'), p = $('playBtn');
+  const onceLock = recState === 'playing' && !playing?.loop;      // a one-shot playback can't be interrupted
+  b.textContent = recState === 'arming' || recState === 'recording' ? 'Stop' : current ? 'Record new' : 'Record';
+  b.classList.toggle('stop', recState === 'arming' || recState === 'recording');
+  b.disabled = onceLock;
+  p.disabled = !current || recState === 'arming' || recState === 'recording' || onceLock;
+  p.textContent = recState === 'playing' ? (onceLock ? 'Playing…' : 'Stop') : 'Play';
+  p.classList.toggle('stop', recState === 'playing' && !onceLock);
+  $('saveBtn').disabled = !current || recState === 'arming' || recState === 'recording';
 }
-async function startRec() {
-  stopPlay();
+async function recPress() {
+  if (recState === 'arming') { recState = 'idle'; micClose(); setStatus('', current ? 'Ready' : 'Standby', 'Cancelled.'); view = current ? 'take' : 'idle'; return recUI(); }
+  if (recState === 'recording') return recFinish();
+  if (recState === 'playing') { if (!playing?.loop) return; stopPlayback(); }
+  // show recording immediately; the mic catches up a moment later
+  recState = 'arming'; recChunks = []; recPeaks = []; recSamples = 0;
+  view = 'recording'; setStatus('rec', 'Recording', 'Opening the mic…'); recUI();
   try {
     await engine();
-    recStream = await getMic();
-    if (!window.MediaRecorder) throw new Error('recording is not supported in this browser');
-    const type = pickType();
-    recorder = new MediaRecorder(recStream, type ? { mimeType: type } : undefined);
-    const parts = [];
-    recorder.ondataavailable = e => { if (e.data && e.data.size) parts.push(e.data); };
-    recorder.onstop = () => finishRec(new Blob(parts, { type: recorder.mimeType || type }));
-    const meter = ctx.createAnalyser(); meter.fftSize = 1024;
-    scopeSrc = ctx.createMediaStreamSource(recStream); scopeSrc.connect(meter);
-    recorder.start();
-    recStart = Date.now();
-    recTimer = setInterval(() => { $('info').textContent = clock((Date.now() - recStart) / 1000); if (Date.now() - recStart > 120000) stopRec(); }, 200);
-    setStatus('rec', 'Recording', 'Speak now. Tap Stop when you are done (2 minutes max).');
-    $('recBtn').textContent = 'Stop'; $('recBtn').classList.add('stop');
-    $('playBtn').disabled = $('saveBtn').disabled = true;
-    lockScreen(); scope(meter);
-  } catch (e) { cleanupRec(); setStatus('err', 'Error', micError(e)); }
+    if (recState !== 'arming') return;
+    await micOpen(chunk => {
+      if (recState !== 'recording') return;
+      recChunks.push(chunk); recSamples += chunk.length;
+      let m = 0; for (let i = 0; i < chunk.length; i++) { const a = Math.abs(chunk[i]); if (a > m) m = a; } recPeaks.push(m);
+      if (recSamples / ctx.sampleRate >= 120) recFinish();
+    });
+    if (recState !== 'arming') { micClose(); return; }
+    recState = 'recording'; lockScreen();
+    setStatus('rec', 'Recording', 'Speak now. Tap Stop when you are done.'); recUI();
+  } catch (e) { micClose(); recState = 'idle'; view = current ? 'take' : 'idle'; setStatus('err', 'Error', micError(e)); recUI(); }
 }
-function stopRec() { if (recorder && recorder.state !== 'inactive') recorder.stop(); cleanupRec(); }
-function cleanupRec() {
-  clearInterval(recTimer);
-  if (scopeSrc) { scopeSrc.disconnect(); scopeSrc = null; }
-  if (recStream) recStream.getTracks().forEach(t => t.stop());
-  recStream = null;
-  $('recBtn').textContent = recBuffer ? 'Record again' : 'Record'; $('recBtn').classList.remove('stop');
-  scope(null); if (!player) unlockScreen();
+async function recFinish() {
+  recState = 'idle'; micClose();
+  const t = makeTake(recChunks); recChunks = []; recPeaks = [];
+  if (!t || t.dur < 0.15) { view = current ? 'take' : 'idle'; setStatus('', current ? 'Ready' : 'Standby', 'Nothing recorded. Try again.'); return recUI(); }
+  current = t; showTake(t); view = 'take';
+  await wait(120);                                // let iPhone switch from mic to speaker before playing
+  recPlay();
 }
-async function finishRec(blob) {
-  try {
-    const data = await blob.arrayBuffer();
-    recBuffer = await new Promise((ok, no) => { const r = ctx.decodeAudioData(data, ok, no); if (r && r.then) r.then(ok, no); });
-    // normalise the recording so quiet takes come out loud
-    let peak = 0;
-    for (let c = 0; c < recBuffer.numberOfChannels; c++) { const d = recBuffer.getChannelData(c); for (let i = 0; i < d.length; i++) { const a = Math.abs(d[i]); if (a > peak) peak = a; } }
-    if (peak > 0.001) { const k = 0.95 / peak; for (let c = 0; c < recBuffer.numberOfChannels; c++) { const d = recBuffer.getChannelData(c); for (let i = 0; i < d.length; i++) d[i] *= k; } }
-    $('recBtn').textContent = 'Record again';
-    $('playBtn').disabled = $('saveBtn').disabled = false;
-    $('info').textContent = clock(recBuffer.duration);
-    startPlay();
-  } catch (e) { setStatus('err', 'Error', 'Could not read the recording. Try again.'); }
-}
-function startPlay() {
-  if (!recBuffer) return;
-  stopPlay();
-  session('playback');
-  ctx.resume();
-  player = ctx.createBufferSource();
-  player.buffer = recBuffer; player.loop = loop;
-  player.connect(chain.input);
-  player.onended = () => { if (player && !player.loop) stopPlay(); };
-  player.start(); playStart = ctx.currentTime;
-  $('playBtn').textContent = 'Stop'; $('playBtn').classList.add('stop');
+async function recPlay() {
+  if (!current) return;
+  recState = 'playing'; recUI();
   setStatus('on', 'Playing', loop ? 'Looping. Change the controls to shape the voice.' : 'Playing once.');
-  lockScreen(); scope(chain.analyser);
-  tick();
+  await playTake(current, loop, () => { recState = 'idle'; setStatus('', 'Ready', 'Tap Play to hear it again, Save to keep it, or Record new.'); unlockScreen(); recUI(); });
+  recUI();
 }
-function tick() {
-  if (!player) return;
-  const t = (ctx.currentTime - playStart) % recBuffer.duration;
-  $('info').textContent = clock(t) + ' / ' + clock(recBuffer.duration);
-  setTimeout(tick, 250);
+function playPress() {
+  if (recState === 'playing') { if (!playing?.loop) return; stopPlayback(); recState = 'idle'; setStatus('', 'Ready', 'Stopped.'); unlockScreen(); return recUI(); }
+  recPlay();
 }
-function stopPlay() {
-  if (player) { player.onended = null; try { player.stop(); } catch (e) {} player.disconnect(); player = null; }
-  $('playBtn').textContent = 'Play'; $('playBtn').classList.remove('stop');
-  if (recBuffer && mode === 'rec' && !recStream) { setStatus('', 'Ready', 'Tap Play to hear it again, or Save to keep it.'); $('info').textContent = clock(recBuffer.duration); }
-  scope(null); unlockScreen();
+function stopRecMode() {
+  if (recState === 'arming' || recState === 'recording') micClose();
+  stopPlayback(); recState = 'idle'; recChunks = []; unlockScreen(); recUI();
 }
 
 /* ---------- save: render offline with current settings, export WAV ---------- */
@@ -568,16 +633,17 @@ function wav(buf) {
   return new Blob([out], { type: 'audio/wav' });
 }
 async function saveRobot() {
-  if (!recBuffer) return;
-  $('saveBtn').disabled = true; $('msg').textContent = 'Rendering…';
+  if (!current) return;
+  const src0 = current.buffer;
+  $('saveBtn').disabled = true; $('msg').textContent = 'Rendering take ' + current.id + '…';
   try {
-    const rate = recBuffer.sampleRate, len = Math.ceil((recBuffer.duration + 0.5) * rate);
+    const rate = src0.sampleRate, len = Math.ceil((src0.duration + 0.5) * rate);
     const off = new (window.OfflineAudioContext || window.webkitOfflineAudioContext)(1, len, rate);
     if (off.audioWorklet) { try { await off.audioWorklet.addModule(WORKLET_URL); } catch (e) {} }
     const n = buildChain(off, params());
-    const src = off.createBufferSource(); src.buffer = recBuffer; src.connect(n.input); src.start();
+    const src = off.createBufferSource(); src.buffer = src0; src.connect(n.input); src.start();
     const rendered = await off.startRendering();
-    const file = new File([wav(rendered)], 'robot-voice-' + new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-') + '.wav', { type: 'audio/wav' });
+    const file = new File([wav(rendered)], 'robot-voice-take-' + current.id + '.wav', { type: 'audio/wav' });
     if (navigator.canShare && navigator.canShare({ files: [file] })) {
       try { await navigator.share({ files: [file], title: 'Robot voice' }); $('msg').textContent = 'Shared.'; }
       catch (e) { $('msg').textContent = e.name === 'AbortError' ? 'Save cancelled.' : 'Could not share: ' + e.message; }
@@ -588,80 +654,52 @@ async function saveRobot() {
       $('msg').textContent = 'Downloaded ' + file.name;
     }
   } catch (e) { $('msg').textContent = 'Could not render: ' + (e.message || e); }
-  $('saveBtn').disabled = false;
-}
-
-/* ---------- scope ---------- */
-const cv = $('scope'), g = cv.getContext('2d');
-let scopeNode = null;
-function scope(node) { scopeNode = node; cancelAnimationFrame(raf); node ? draw() : flat(); }
-function flat() {
-  g.clearRect(0, 0, cv.width, cv.height); g.strokeStyle = '#2c3238'; g.lineWidth = 2;
-  g.beginPath(); g.moveTo(0, cv.height / 2); g.lineTo(cv.width, cv.height / 2); g.stroke();
-}
-function draw() {
-  const a = scopeNode; if (!a) return flat();
-  const buf = new Float32Array(a.fftSize); a.getFloatTimeDomainData(buf);
-  g.clearRect(0, 0, cv.width, cv.height);
-  g.strokeStyle = app.classList.contains('rec') ? '#ff6b57' : '#f2a93b'; g.lineWidth = 3; g.beginPath();
-  for (let i = 0; i < buf.length; i++) { const x = i / buf.length * cv.width, y = cv.height / 2 - buf[i] * cv.height * 0.9; i ? g.lineTo(x, y) : g.moveTo(x, y); }
-  g.stroke(); raf = requestAnimationFrame(draw);
+  recUI();
 }
 
 /* ---------- repeat-after-me mode ---------- */
-const MAX_S = 20, MIN_VOICE_S = 0.2;
-let repOn = false, repState = 'off', repStream = null, repSrc = null, repTap = null, repSink = null, repMeter = null, repPlayer = null;
-let take = [], quietS = 0, voicedS = 0, takeS = 0, lastLoudLen = 0;
-function chunkDb(a) { let s = 0; for (let i = 0; i < a.length; i++) s += a[i] * a[i]; return 10 * Math.log10(s / a.length + 1e-12); }
+// Thresholds are compared with the average level over the last half second, so the bounce of a voice
+// doesn't start or stop a take. A take starts where the voice first crossed the start level inside that
+// half second, and ends where it last stayed above the silence level.
+const MAX_S = 20, MIN_VOICE_S = 0.2, WINDOW_S = 0.5, TAIL_S2 = 0.1;
+let repOn = false, repState = 'off';
+let win = [], take = [], takePeaks = [], quietS = 0, voicedS = 0, takeS = 0, lastLoudLen = 0, lastChunk = null;
 function meterPos(db) { return Math.max(0, Math.min(100, (db + 80) / 80 * 100)); }
-function drawMeter(db) {
-  $('repBar').style.width = meterPos(db) + '%';
-  $('meter').classList.toggle('hot', db > +$('thrOn').value);
-}
+function drawMeter(db) { $('repBar').style.width = meterPos(db) + '%'; $('meter').classList.toggle('hot', db > +$('thrOn').value); }
 function placeMarkers() { $('mOn').style.left = meterPos(+$('thrOn').value) + '%'; $('mOff').style.left = meterPos(+$('thrOff').value) + '%'; }
+function windowDb() { let e = 0, n = 0; for (const w of win) { e += w.e * w.n; n += w.n; } return 10 * Math.log10(e / (n || 1) + 1e-12); }
+function repUI() {
+  const b = $('repBtn'), lockedPlay = repState === 'playing' && !repLoop;
+  b.textContent = repOn ? 'Stop' : 'Start'; b.classList.toggle('stop', repOn);
+  b.disabled = lockedPlay || repState === 'opening';
+  $('repNext').hidden = !(repState === 'playing' && repLoop);
+}
 async function startRepeat() {
+  repOn = true; repState = 'opening'; repUI();
+  setStatus('on', 'Listening', 'Opening the mic…');
   try {
     await engine();
     if (!window.AudioWorkletNode || !ctx.audioWorklet) throw new Error('this browser cannot run Repeat mode');
-    repOn = true; lockScreen();
-    $('repBtn').textContent = 'Stop'; $('repBtn').classList.add('stop');
+    lockScreen();
     await repListen();
   } catch (e) { stopRepeat(); setStatus('err', 'Error', micError(e)); }
 }
 async function repListen() {
   if (!repOn) return;
-  session('play-and-record');
-  repStream = await getMic();
-  if (!repOn) { repStream.getTracks().forEach(t => t.stop()); repStream = null; return; }
-  repSrc = ctx.createMediaStreamSource(repStream);
-  repTap = new AudioWorkletNode(ctx, 'tap', { numberOfInputs: 1, numberOfOutputs: 1, channelCount: 1, channelCountMode: 'explicit' });
-  repSink = ctx.createGain(); repSink.gain.value = 0;
-  repMeter = ctx.createAnalyser(); repMeter.fftSize = 1024;
-  repSrc.connect(repTap); repTap.connect(repSink); repSink.connect(ctx.destination); repSrc.connect(repMeter);
-  take = []; win = [];
-  repTap.port.onmessage = e => onChunk(e.data);
-  repState = 'listening'; $('repNext').hidden = true;
+  win = []; take = []; takePeaks = []; lastChunk = null;
+  repState = 'opening'; repUI();
+  await micOpen(onChunk);
+  if (!repOn) { micClose(); return; }
+  repState = 'listening'; repUI(); view = 'listening';
   setStatus('on', 'Listening', 'Say something above the start level.');
   $('info').textContent = '';
-  scope(repMeter);
 }
-function closeRepMic() {
-  if (repTap) { repTap.port.onmessage = null; repTap.disconnect(); }
-  if (repSrc) repSrc.disconnect();
-  if (repSink) repSink.disconnect();
-  if (repStream) repStream.getTracks().forEach(t => t.stop());
-  repTap = repSrc = repSink = repMeter = repStream = null;
-}
-// Thresholds are compared with the average level over the last half second, so the bounce of a voice
-// doesn't start or stop a recording. The recording itself starts where the voice first crossed the start level
-// inside that half second, and ends where it last stayed above the silence level.
-const WINDOW_S = 0.5, TAIL_S2 = 0.1;
-let win = [];
-function windowDb() { let e = 0, n = 0; for (const w of win) { e += w.e * w.n; n += w.n; } return 10 * Math.log10(e / (n || 1) + 1e-12); }
 function onChunk(chunk) {
-  let e = 0; for (let i = 0; i < chunk.length; i++) e += chunk[i] * chunk[i];
+  let e = 0, m = 0;
+  for (let i = 0; i < chunk.length; i++) { const v = chunk[i]; e += v * v; const a = Math.abs(v); if (a > m) m = a; }
   const n = chunk.length, dur = n / ctx.sampleRate, raw = 10 * Math.log10(e / n + 1e-12);
-  win.push({ e: e / n, n, raw, chunk });
+  lastChunk = chunk;
+  win.push({ e: e / n, n, raw, chunk, m });
   while (win.length * dur > WINDOW_S) win.shift();
   const db = windowDb();
   drawMeter(db);
@@ -670,63 +708,94 @@ function onChunk(chunk) {
     // start: half-second average above the start level, with real voice in it (not one click)
     if (db > on && win.filter(w => w.raw > on).length * dur >= 0.1) {
       const first = Math.max(0, win.findIndex(w => w.raw > on));
-      take = win.slice(first).map(w => w.chunk);
-      voicedS = win.slice(first).filter(w => w.raw > on).length * dur;
+      const part = win.slice(first);
+      take = part.map(w => w.chunk); takePeaks = part.map(w => w.m);
+      voicedS = part.filter(w => w.raw > on).length * dur;
       takeS = take.length * dur; quietS = 0; lastLoudLen = take.length;
-      repState = 'recording';
+      repState = 'recording'; view = 'recording';
       setStatus('rec', 'Recording', 'Recording. Stop talking to hear it back.');
     }
   } else if (repState === 'recording') {
-    take.push(chunk); takeS += dur;
+    take.push(chunk); takePeaks.push(m); takeS += dur;
     if (raw > on) voicedS += dur;
     // a chunk counts as sound only if the half-second average agrees, so a lone blip in silence is ignored
     if (raw > off && db > off) { lastLoudLen = take.length; quietS = 0; } else quietS += dur;
-    $('info').textContent = takeS.toFixed(1) + ' s';
-    if ((quietS >= hold && db < off) || takeS >= MAX_S) finishTake(dur);
+    if ((quietS >= hold && db < off) || takeS >= MAX_S) repFinish(dur);
   }
 }
-function finishTake(dur) {
-  repState = 'processing';
-  closeRepMic(); win = [];
-  if (voicedS < MIN_VOICE_S) { $('msg').textContent = 'Too short. Listening again.'; return repListen(); }
-  const keep = take.slice(0, Math.min(take.length, lastLoudLen + Math.ceil(TAIL_S2 / dur)));
-  const len = keep.reduce((n, c) => n + c.length, 0);
-  const buf = ctx.createBuffer(1, len, ctx.sampleRate), d = buf.getChannelData(0);
-  let o = 0, peak = 0; for (const c of keep) { d.set(c, o); o += c.length; }
-  for (let i = 0; i < len; i++) peak = Math.max(peak, Math.abs(d[i]));
-  if (peak > 0.001) for (let i = 0; i < len; i++) d[i] *= 0.95 / peak;
-  const f = Math.min(240, len >> 2); for (let i = 0; i < f; i++) { d[i] *= i / f; d[len - 1 - i] *= i / f; }
-  take = [];
-  repPlay(buf);
-}
-function repPlay(buf) {
+async function repFinish(dur) {
+  repState = 'processing'; micClose(); drawMeter(-100);
+  if (voicedS < MIN_VOICE_S) { $('msg').textContent = 'Too short. Listening again.'; return repListen().catch(repFail); }
+  const t = makeTake(take, Math.min(take.length, lastLoudLen + Math.ceil(TAIL_S2 / dur)));
+  take = []; takePeaks = []; win = [];
+  if (!t) return repListen().catch(repFail);
+  current = t; showTake(t); view = 'take';
+  await wait(120);
   if (!repOn) return;
-  session('playback'); ctx.resume();
-  repState = 'playing';
-  repPlayer = ctx.createBufferSource(); repPlayer.buffer = buf; repPlayer.loop = repLoop;
-  repPlayer.connect(chain.input);
-  repPlayer.onended = () => { repPlayer = null; if (repOn && !repLoop) setTimeout(repListen, 350); };
-  repPlayer.start();
-  $('repNext').hidden = !repLoop;
-  setStatus('on', 'Repeating', repLoop ? 'Looping. Tap Listen for a new line.' : 'Repeating you…');
-  $('info').textContent = buf.duration.toFixed(1) + ' s';
-  drawMeter(-100); scope(chain.analyser);
+  repState = 'playing'; repUI();
+  setStatus('on', 'Repeating', repLoop ? 'Looping. Tap Listen for a new line.' : 'Repeating take ' + t.id + '…');
+  await playTake(t, repLoop, () => { if (!repOn) return; repState = 'gap'; repUI(); setTimeout(() => repListen().catch(repFail), 300); });
 }
-function repNext() {
-  if (repPlayer) { repPlayer.onended = null; try { repPlayer.stop(); } catch (e) {} repPlayer.disconnect(); repPlayer = null; }
-  setTimeout(repListen, 200);
-}
+function repFail(e) { stopRepeat(); setStatus('err', 'Error', micError(e)); }
+function repNext() { stopPlayback(); repState = 'gap'; repUI(); setTimeout(() => repListen().catch(repFail), 150); }
 function stopRepeat() {
   repOn = false; repState = 'off';
-  if (repPlayer) { repPlayer.onended = null; try { repPlayer.stop(); } catch (e) {} repPlayer.disconnect(); repPlayer = null; }
-  closeRepMic(); take = []; win = [];
-  $('repBtn').textContent = 'Start'; $('repBtn').classList.remove('stop'); $('repNext').hidden = true;
-  drawMeter(-100); scope(null); unlockScreen();
+  stopPlayback(); micClose(); take = []; win = []; lastChunk = null;
+  drawMeter(-100); unlockScreen(); repUI();
+  view = current ? 'take' : 'idle';
   setStatus('', 'Standby', 'Tap Start, then talk. Set the levels with the meter.'); $('info').textContent = '';
 }
 
+/* ---------- display: waveform of the current take with progress ---------- */
+const cv = $('scope'), g = cv.getContext('2d');
+let view = 'idle', liveBuf = null;
+function cssVar(name) { return getComputedStyle($('screen')).getPropertyValue(name).trim(); }
+function bars(peaks, count, color, from, to, x0 = 0) {
+  const W = cv.width, H = cv.height, bw = W / count, mid = H / 2;
+  g.fillStyle = color;
+  for (let i = from; i < to && i < peaks.length; i++) {
+    const h = Math.max(3, Math.sqrt(peaks[i]) * (H - 8));
+    g.fillRect(x0 + i * bw + bw * 0.15, mid - h / 2, Math.max(1, bw * 0.7), h);
+  }
+}
+function frame() {
+  const W = cv.width, H = cv.height;
+  g.clearRect(0, 0, W, H);
+  const accent = cssVar('--wave') || '#f2a93b', dimc = cssVar('--wave-dim') || '#5a4a30';
+  if (view === 'recording') {
+    const peaks = mode === 'repeat' ? takePeaks : recPeaks;
+    const count = Math.max(120, peaks.length);
+    if (!peaks.length) { g.fillStyle = '#ff6b57'; g.globalAlpha = 0.5 + 0.5 * Math.sin(performance.now() / 150); g.fillRect(0, H / 2 - 1, 6, 2); g.globalAlpha = 1; }
+    bars(peaks, count, '#ff6b57', 0, peaks.length);
+    $('info').textContent = clock(mode === 'repeat' ? takeS : (ctx ? recSamples / ctx.sampleRate : 0));
+  } else if (view === 'take' && current) {
+    const p = current.peaks, pos = playing && playing.take === current ? playPos() : null;
+    const done = pos == null ? p.length : Math.floor(pos / current.dur * p.length);
+    bars(p, p.length, pos == null ? accent : dimc, 0, p.length);
+    if (pos != null) {
+      bars(p, p.length, accent, 0, done);
+      const x = pos / current.dur * W;
+      g.fillStyle = '#e4e8ea'; g.fillRect(x - 1, 4, 2, H - 8);
+      $('info').textContent = clock(pos) + ' / ' + clock(current.dur);
+    } else if (mode !== 'live') $('info').textContent = clock(current.dur);
+  } else if (view === 'listening' && lastChunk) {
+    g.strokeStyle = '#5fd38d'; g.lineWidth = 3; g.beginPath();
+    for (let i = 0; i < lastChunk.length; i += 4) { const x = i / lastChunk.length * W, y = H / 2 - lastChunk[i] * H * 1.6; i ? g.lineTo(x, y) : g.moveTo(x, y); }
+    g.stroke();
+  } else if (view === 'live' && chain) {
+    const a = chain.analyser; if (!liveBuf) liveBuf = new Float32Array(a.fftSize);
+    a.getFloatTimeDomainData(liveBuf);
+    g.strokeStyle = '#f2a93b'; g.lineWidth = 3; g.beginPath();
+    for (let i = 0; i < liveBuf.length; i++) { const x = i / liveBuf.length * W, y = H / 2 - liveBuf[i] * H * 0.9; i ? g.lineTo(x, y) : g.moveTo(x, y); }
+    g.stroke();
+  } else {
+    g.fillStyle = '#2c3238'; g.fillRect(0, H / 2 - 1, W, 2);
+  }
+  requestAnimationFrame(frame);
+}
+
 /* ---------- UI ---------- */
-function busy() { return !!(liveStream || recStream || player || repOn); }
+function busy() { return !!(liveStream || mic || playing || repOn); }
 function render() {
   ids.forEach(k => { const el = $(k); $(k + 'V').textContent = fmt[k](el.value); el.style.setProperty('--p', ((el.value - el.min) / (el.max - el.min) * 100) + '%'); });
   const press = (sel, key, val) => document.querySelectorAll(sel).forEach(b => b.setAttribute('aria-pressed', String(b.dataset[key]) === String(val)));
@@ -736,48 +805,45 @@ function render() {
   $('noteL').textContent = pitch === 'snap' ? 'Key' : 'Note';
   $('modeRec').setAttribute('aria-pressed', mode === 'rec'); $('modeRep').setAttribute('aria-pressed', mode === 'repeat'); $('modeLive').setAttribute('aria-pressed', mode === 'live');
   $('recPanel').hidden = mode !== 'rec'; $('repPanel').hidden = mode !== 'repeat'; $('livePanel').hidden = mode !== 'live';
-  $('repLoop').setAttribute('aria-pressed', repLoop); placeMarkers();
-  $('loopBtn').setAttribute('aria-pressed', loop);
+  $('loopBtn').setAttribute('aria-pressed', loop); $('repLoop').setAttribute('aria-pressed', repLoop); placeMarkers();
   if (chain) setChain(chain, params(), true);
   save();
 }
 function setMode(m) {
   if (m === mode) return;
-  if (mode === 'live') stopLive(); else if (mode === 'repeat') stopRepeat(); else { stopRec(); stopPlay(); }
+  if (mode === 'live') stopLive(); else if (mode === 'repeat') stopRepeat(); else stopRecMode();
   mode = m; render();
-  if (m === 'live') setStatus('', 'Standby', 'Plug in headphones, then tap Start.');
-  else if (m === 'repeat') { setStatus('', 'Standby', 'Tap Start, then talk. Set the levels with the meter.'); $('info').textContent = ''; }
-  else if (recBuffer) { setStatus('', 'Ready', 'Tap Play to hear your last recording.'); $('info').textContent = clock(recBuffer.duration); }
-  else { setStatus('', 'Standby', 'Tap Record and say something.'); $('info').textContent = '0:00'; }
+  view = m === 'live' ? 'idle' : current ? 'take' : 'idle';
+  if (m === 'live') { setStatus('', 'Standby', 'Plug in headphones, then tap Start.'); $('info').textContent = ''; }
+  else if (m === 'repeat') setStatus('', 'Standby', 'Tap Start, then talk. Set the levels with the meter.');
+  else setStatus('', current ? 'Ready' : 'Standby', current ? 'Tap Play to hear take ' + current.id + ', or Record new.' : 'Tap Record and say something.');
+  recUI(); repUI();
 }
 
 $('modeRec').onclick = () => setMode('rec');
-$('modeLive').onclick = () => setMode('live');
 $('modeRep').onclick = () => setMode('repeat');
+$('modeLive').onclick = () => setMode('live');
+$('liveBtn').onclick = () => liveStream ? stopLive() : startLive();
+$('recBtn').onclick = recPress;
+$('playBtn').onclick = playPress;
+$('loopBtn').onclick = () => { loop = !loop; if (playing && mode === 'rec') { playing.src.loop = loop; playing.loop = loop; } render(); recUI(); };
+$('saveBtn').onclick = saveRobot;
 $('repBtn').onclick = () => repOn ? stopRepeat() : startRepeat();
 $('repNext').onclick = repNext;
-$('repLoop').onclick = () => { repLoop = !repLoop; if (repPlayer) { repPlayer.loop = repLoop; $('repNext').hidden = !repLoop; } render(); };
+$('repLoop').onclick = () => { repLoop = !repLoop; if (playing && mode === 'repeat') { playing.src.loop = repLoop; playing.loop = repLoop; } render(); repUI(); };
 // keep the silence level at least 3 dB under the start level
 $('thrOn').addEventListener('input', () => { if (+$('thrOff').value > +$('thrOn').value - 3) $('thrOff').value = +$('thrOn').value - 3; });
 $('thrOff').addEventListener('input', () => { if (+$('thrOff').value > +$('thrOn').value - 3) $('thrOn').value = +$('thrOff').value + 3; });
-$('liveBtn').onclick = () => liveStream ? stopLive() : startLive();
-$('recBtn').onclick = () => recStream ? stopRec() : startRec();
-$('playBtn').onclick = () => player ? stopPlay() : startPlay();
-$('loopBtn').onclick = () => { loop = !loop; if (player) player.loop = loop; render(); };
-$('saveBtn').onclick = saveRobot;
 ids.forEach(k => $(k).addEventListener('input', render));
 document.querySelectorAll('[data-wave]').forEach(b => b.addEventListener('click', () => { wave = b.dataset.wave; render(); }));
 document.querySelectorAll('[data-pitch]').forEach(b => b.addEventListener('click', () => { pitch = b.dataset.pitch; render(); }));
 document.querySelectorAll('[data-scale]').forEach(b => b.addEventListener('click', () => { scale = b.dataset.scale; render(); }));
 document.querySelectorAll('[data-harmony]').forEach(b => b.addEventListener('click', () => { harmony = +b.dataset.harmony; render(); }));
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible' && busy()) {
-    lockScreen(); if (ctx && ctx.state !== 'running') ctx.resume().catch(() => {});
-    if (scopeNode) { cancelAnimationFrame(raf); draw(); }
-  }
+  if (document.visibilityState === 'visible' && busy()) { lockScreen(); if (ctx && ctx.state !== 'running') ctx.resume().catch(() => {}); }
 });
 
-render(); flat();
+render(); recUI(); repUI(); requestAnimationFrame(frame);
 setStatus('', 'Standby', mode === 'live' ? 'Plug in headphones, then tap Start.' : mode === 'repeat' ? 'Tap Start, then talk. Set the levels with the meter.' : 'Tap Record and say something.');
 </script>
 </body>
