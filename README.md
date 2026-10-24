@@ -30,7 +30,7 @@ The microphone only works on an `https://` page, which is why it is hosted here 
 
 ## Privacy
 
-All audio processing happens on your device with the Web Audio API. Nothing is recorded, stored or uploaded.
+All audio processing happens on your device with the Web Audio API. Recordings stay in memory on your phone until you leave the page or save them yourself. Nothing is uploaded.
 
 ## Hosting
 
