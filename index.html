@@ -293,7 +293,8 @@ class RobotVoice extends AudioWorkletProcessor {
     fft(re, im); // real, even spectrum -> real symmetric pulse (time-reversed = same)
     let gE = 1e-12;
     for (let i = 0; i < N; i++) { const v = re[(i + N / 2) % N] * HANN[i]; this.grain[i] = v; gE += v * v; }
-    const scale = rms * voiced * mockGain / Math.sqrt(gE) * 1.6;
+    const level = p.pitch === 'mock' ? this.mockLevel : rms * voiced;   // mock ignores consonant gating
+    const scale = level * mockGain / Math.sqrt(gE) * 1.6;
     for (let i = 0; i < N; i++) this.grain[i] *= scale;
     // pitch
     if (p.pitch === 'snap') {
@@ -308,13 +309,13 @@ class RobotVoice extends AudioWorkletProcessor {
       }
       if (!this.snapF) this.snapF = 440 * Math.pow(2, (p.note - 69) / 12);
     } else if (p.pitch === 'mock') {
-      // follow the voice's melody, a bit higher and more exaggerated, for a whiny mocking tone
+      // follow the voice's own melody at its natural pitch
       const f = this.detect(x);
       const jump = f && this.lastIn ? f / this.lastIn : 0;
       this.cons = jump > 0.9 && jump < 1.11 ? (this.cons || 0) + 1 : 0;   // trust a pitch only after 3 steady readings
       if (f && this.cons >= 2) {
         this.fAvg = this.fAvg ? this.fAvg * 0.99 + f * 0.01 : f;
-        const target = this.fAvg * Math.pow(f / this.fAvg, 1.3) * 1.19;
+        const target = this.fAvg * Math.pow(f / this.fAvg, 1.1);   // your own pitch, just a touch more sing-song
         this.mockF = this.mockF ? this.mockF * 0.6 + target * 0.4 : target;
       }
       if (f) this.lastIn = f;
@@ -325,30 +326,40 @@ class RobotVoice extends AudioWorkletProcessor {
       if (!this.parF) this.parF = 400;
     }
   }
-  // Mock: replace the words with "meh". Each syllable is found from the loudness (a rise after a quiet gap
-  // or a clear dip), starts on a hummed "m" and opens into "eh". Returns a loudness factor for the grain.
+  // Mock: replace the words with "meh". Each syllable is found from the loudness (a rise after a quiet gap,
+  // or a clear dip), starts on a short hummed "m" and opens into "eh". Every meh is held for at least 160 ms
+  // and then fades out, so it is never chopped up by consonants or small dips. Sets this.mockLevel.
   mockEnvelope(rms, binHz) {
     const env = this.env, hop = HOP / sampleRate;
-    this.pk = Math.max((this.pk || 0) * 0.997, rms);
+    this.pk = Math.max((this.pk || 0) * 0.998, rms);
     const pk = this.pk || 1e-9;
     this.since = (this.since || 0) + hop;
+    // smooth the input loudness (~25 ms) so single frames can't trigger anything
+    this.sm = (this.sm || 0) * 0.8 + rms * 0.2;
+    const sm = this.sm;
     let onset = false;
-    if (rms < 0.2 * pk || rms < 0.002) { this.low = true; this.locMax = 0; this.dip = false; }
-    else if (this.low && rms > 0.35 * pk) { onset = true; this.low = false; }
+    if (sm < 0.15 * pk || sm < 0.0015) { this.low = true; this.locMax = 0; this.dip = false; this.dipMin = 1; }
+    else if (this.low && sm > 0.3 * pk && this.since > 0.12) { onset = true; this.low = false; }
     else if (!this.low) {
-      if (rms > (this.locMax || 0)) this.locMax = rms;
-      if (rms < 0.6 * this.locMax) { this.dip = true; this.dipMin = Math.min(this.dipMin || 1, rms); }
-      if (this.dip && rms > this.dipMin * 1.5 && this.since > 0.12) onset = true;
+      if (sm > (this.locMax || 0)) this.locMax = sm;
+      if (sm < 0.5 * this.locMax) { this.dip = true; this.dipMin = Math.min(this.dipMin || 1, sm); }
+      if (this.dip && sm > this.dipMin * 1.8 && this.since > 0.18) onset = true;
     }
-    if (onset) { this.since = 0; this.locMax = rms; this.dip = false; this.dipMin = 1; }
+    if (onset) { this.since = 0; this.locMax = sm; this.dip = false; this.dipMin = 1; this.sylPeak = sm; }
+    this.sylPeak = Math.max(this.sylPeak || 0, sm);
+    // level: follow the voice, but hold each meh for its first 160 ms, then release quickly (~45 ms)
+    const floor = this.since < 0.16 ? 0.75 * (this.sylPeak || 0) : 0;
+    const target = Math.max(sm, floor);
+    const rel = Math.exp(-hop / 0.045);
+    this.mockLevel = target > (this.mockLevel || 0) ? target : Math.max(target, this.mockLevel * rel);
     if (!this.mockEH) {
       const shape = F => { const e = new Float64Array(N / 2 + 1); for (let k = 0; k <= N / 2; k++) { const f = k * binHz; let v = 1e-4; for (const [fc, bw, g] of F) { const r = f / fc; v += g / Math.sqrt((1 - r * r) ** 2 + (f * bw / (fc * fc)) ** 2); } e[k] = v; } return e; };
       this.mockEH = shape([[600, 70, 1], [1900, 90, 0.8], [2600, 130, 0.35], [3500, 250, 0.1]]);
       this.mockM = shape([[260, 70, 1], [1100, 300, 0.06], [2200, 300, 0.04]]);
     }
-    const m = this.since < 0.06 ? 1 : this.since < 0.1 ? 1 - (this.since - 0.06) / 0.04 : 0;
+    const m = this.since < 0.04 ? 1 : this.since < 0.08 ? 1 - (this.since - 0.04) / 0.04 : 0;
     for (let k = 0; k <= N / 2; k++) env[k] = this.mockEH[k] * (1 - m) + this.mockM[k] * m;
-    return 1 - 0.7 * m;   // the hummed m is much quieter, so each meh starts clearly
+    return 1 - 0.55 * m;   // the hummed m is quieter, so each meh has a clear start
   }
   addGrain(at, amp) {
     const g = this.grain, a = this.acc, base = Math.floor(at);
