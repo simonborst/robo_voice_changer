@@ -123,7 +123,7 @@ button:focus-visible{outline:2px solid var(--fg);outline-offset:2px}
     <div class="fader"><label for="mix">Robot mix <output id="mixV"></output></label>
       <input type="range" id="mix" min="0" max="100" step="1" value="100"></div>
     <div class="fader"><label for="vol">Volume <output id="volV"></output></label>
-      <input type="range" id="vol" min="0" max="200" step="1" value="100"></div>
+      <input type="range" id="vol" min="0" max="300" step="1" value="150"></div>
 
     <div class="sect">Ring modulator</div>
     <div class="fader"><label for="ring">Amount <output id="ringV"></output></label>
@@ -343,11 +343,14 @@ function buildChain(c, p) {
   const bp = c.createBiquadFilter(); bp.type = 'peaking'; bp.frequency.value = 1800; bp.Q.value = 1; bp.gain.value = 3;
   const delay = c.createDelay(0.05), fb = c.createGain(), combWet = c.createGain();
   const wet = c.createGain(), dry = c.createGain(), out = c.createGain();
-  const comp = c.createDynamicsCompressor(); comp.threshold.value = -18; comp.ratio.value = 6;
+  const comp = c.createDynamicsCompressor(); comp.threshold.value = -24; comp.ratio.value = 4; comp.attack.value = 0.005; comp.release.value = 0.15;
+  // make-up gain after compression, then a brick-wall limiter so loud settings don't crackle
+  const makeup = c.createGain(); makeup.gain.value = 1.5;
+  const limiter = c.createDynamicsCompressor(); limiter.threshold.value = -1.5; limiter.knee.value = 0; limiter.ratio.value = 20; limiter.attack.value = 0.001; limiter.release.value = 0.08;
   const analyser = c.createAnalyser(); analyser.fftSize = 1024;
   hp.connect(dry); shaper.connect(bp); bp.connect(wet); bp.connect(delay);
   delay.connect(fb); fb.connect(delay); delay.connect(combWet); combWet.connect(wet);
-  wet.connect(out); dry.connect(out); out.connect(comp); comp.connect(analyser); analyser.connect(c.destination);
+  wet.connect(out); dry.connect(out); out.connect(comp); comp.connect(makeup); makeup.connect(limiter); limiter.connect(analyser); analyser.connect(c.destination);
   const n = { c, input, pass, robot, hissG, osc, ringDry, ringWet, shaper, delay, fb, combWet, wet, dry, out, analyser };
   setChain(n, p, false);
   return n;
@@ -374,8 +377,10 @@ function setChain(n, p, smooth) {
 
 /* ---------- shared engine ---------- */
 let ctx, chain, wakeLock, raf, scopeSrc = null;
-async function engine() {
-  if (navigator.audioSession) { try { navigator.audioSession.type = 'play-and-record'; } catch (e) {} }
+// iPhone sends audio to the quiet earpiece while the mic is open, so only use the recording session while recording or live
+function session(type) { if (navigator.audioSession) { try { navigator.audioSession.type = type; } catch (e) {} } }
+async function engine(type) {
+  session(type || 'play-and-record');
   if (!ctx) {
     ctx = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: 'interactive' });
     if (ctx.audioWorklet) { try { await ctx.audioWorklet.addModule(WORKLET_URL); } catch (e) {} }
@@ -472,6 +477,10 @@ async function finishRec(blob) {
   try {
     const data = await blob.arrayBuffer();
     recBuffer = await new Promise((ok, no) => { const r = ctx.decodeAudioData(data, ok, no); if (r && r.then) r.then(ok, no); });
+    // normalise the recording so quiet takes come out loud
+    let peak = 0;
+    for (let c = 0; c < recBuffer.numberOfChannels; c++) { const d = recBuffer.getChannelData(c); for (let i = 0; i < d.length; i++) { const a = Math.abs(d[i]); if (a > peak) peak = a; } }
+    if (peak > 0.001) { const k = 0.95 / peak; for (let c = 0; c < recBuffer.numberOfChannels; c++) { const d = recBuffer.getChannelData(c); for (let i = 0; i < d.length; i++) d[i] *= k; } }
     $('recBtn').textContent = 'Record again';
     $('playBtn').disabled = $('saveBtn').disabled = false;
     $('info').textContent = clock(recBuffer.duration);
@@ -481,6 +490,7 @@ async function finishRec(blob) {
 function startPlay() {
   if (!recBuffer) return;
   stopPlay();
+  session('playback');
   ctx.resume();
   player = ctx.createBufferSource();
   player.buffer = recBuffer; player.loop = loop;
