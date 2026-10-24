@@ -1,6 +1,9 @@
 # Robot Voice
 
-A live robot voice changer that runs in the browser. Open it, tap **Start**, and talk: your voice comes back out sounding robotic, in real time. Built for iPhone Safari, and it works in any modern browser.
+A robot voice changer that runs in the browser. Built for iPhone Safari, and it works in any modern browser. It has two modes:
+
+- **Record & replay** (default): tap **Record**, say something, tap **Stop**. It plays back as a robot on a loop, and you can move the faders while it plays. **Save** exports the robot version as a WAV file. Works on the phone speaker with no feedback.
+- **Live**: tap **Start** and talk; your voice comes back as a robot in real time. Use headphones.
 
 **Live page:** https://simonborst.github.io/robo_voice_changer/
 
@@ -18,8 +21,8 @@ The **Smooth / Buzzy / Harsh** buttons switch the modulator's waveform. Settings
 
 ## Using it on iPhone
 
-1. Open the live page in Safari, tap **Start**, and allow the microphone.
-2. Use headphones. Without them, the speaker feeds back into the mic.
+1. Open the live page in Safari, tap **Record** (or **Start** in Live mode), and allow the microphone.
+2. In Live mode, use headphones. Without them, the speaker feeds back into the mic.
 3. Keep the page on screen. It keeps the display awake while running, but iOS stops the microphone if you lock the phone or switch apps.
 4. Optional: Share → **Add to Home Screen** to launch it like an app.
 
