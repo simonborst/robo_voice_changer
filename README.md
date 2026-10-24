@@ -17,7 +17,7 @@ Every recording becomes a numbered **take** with its own colour. The display sta
 | Control | What it does |
 | --- | --- |
 | Natural / Monotone / Snap / Parrot / Mock | Natural keeps your own voice. Monotone re-sings your words on one steady note. Snap follows your pitch and snaps it to a few robot-style notes. Parrot raises your voice about an octave and a half with a raspy warble and a tiny, nasal beak, and gives one parrot squawk before and one after each playback. |
-| Mock | Replaces your words with "meh meh meh": one "meh" per syllable, following your rhythm and melody at your natural pitch. Each meh is held long enough to be heard clearly. |
+| Mock | Replaces your words with "meh meh meh", one per syllable. It keeps your real voice, pitch and expression and only changes the mouth shape to "m…eh", so nothing is auto-tuned. Short gaps from consonants inside a syllable are filled so each meh stays whole. |
 | Note / Key | The note for Monotone, or the key for Snap. |
 | Root / Fifth / Major / Minor | Which notes Snap may use: one note in octaves, a two-note "beep-boop", or a three-note chord. |
 | Note hold | How long Snap stays on a note before it may jump (default 250 ms). |
