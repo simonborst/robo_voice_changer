@@ -69,7 +69,7 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:28px;heigh
 input[type=range]:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 
 .row{display:flex;gap:10px}
-.row.wrap{flex-wrap:wrap}.row.wrap .chip{flex:1 1 28%}
+.row.five{gap:6px}.row.five .chip{flex:1;min-width:0;padding:10px 2px;font-size:11px;letter-spacing:.02em}
 .chip{flex:1;font:500 12px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--fg);background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:10px 6px}
 .chip[aria-pressed=true]{border-color:var(--accent);color:var(--accent)}
 .chip:disabled{opacity:.35}
@@ -121,7 +121,7 @@ button:focus-visible{outline:2px solid var(--fg);outline-offset:2px}
 
   <div class="rack">
     <div class="sect">Voice</div>
-    <div class="row wrap" role="group" aria-label="Voice mode">
+    <div class="row five" role="group" aria-label="Voice mode">
       <button class="chip" data-pitch="off" aria-pressed="false">Natural</button>
       <button class="chip" data-pitch="mono" aria-pressed="true">Monotone</button>
       <button class="chip" data-pitch="snap" aria-pressed="false">Snap</button>
@@ -277,12 +277,16 @@ class RobotVoice extends AudioWorkletProcessor {
     let mockGain = 1;
     if (p.pitch === 'mock') mockGain = this.mockEnvelope(rms, binHz);
     // build zero-phase grain: envelope (shifted by Size) x soft source rolloff (Tone)
-    const parrot = p.pitch === 'parrot';
-    const ratio = Math.pow(2, (p.size + (parrot ? 6 : 0)) / 12) * (p.comp || 1), fc = 400 * Math.pow(2, p.tone / 100 * 4) * (parrot ? 1.8 : 1);
+    const parrot = p.pitch === 'parrot', mock = p.pitch === 'mock';
+    // parrot: a tiny beak-and-throat (resonances ~9 semitones up), bright and nasal; mock: a soft, human source
+    const ratio = Math.pow(2, (p.size + (parrot ? 9 : 0)) / 12) * (p.comp || 1);
+    const fc = mock ? 1300 : 400 * Math.pow(2, p.tone / 100 * 4) * (parrot ? 1.6 : 1);
     for (let k = 0; k <= N / 2; k++) {
       const src = k / ratio, i0 = Math.floor(src), fr = src - i0;
       const ev = i0 + 1 <= N / 2 ? env[i0] * (1 - fr) + env[i0 + 1] * fr : env[N / 2] * 0.1;
-      const f = k * binHz, g = 1 / (1 + (f / fc) * (f / fc));
+      const f = k * binHz;
+      let g = 1 / (1 + (f / fc) * (f / fc));
+      if (parrot) { g *= (1 + 2.5 * Math.exp(-(((f - 3000) / 700) ** 2))) * (f < 450 ? (f / 450) ** 2 : 1); }
       re[k] = ev * g; im[k] = 0;
       if (k > 0 && k < N / 2) { re[N - k] = re[k]; im[N - k] = 0; }
     }
@@ -317,8 +321,8 @@ class RobotVoice extends AudioWorkletProcessor {
       if (!this.mockF) this.mockF = 180;
     } else if (p.pitch === 'parrot') {
       const f = this.detect(x);
-      if (f) this.parF = this.parF ? this.parF * 0.6 + f * 2.4 * 0.4 : f * 2.4;   // ~15 semitones up, follows intonation
-      if (!this.parF) this.parF = 330;
+      if (f) this.parF = this.parF ? this.parF * 0.6 + f * 3.0 * 0.4 : f * 3.0;   // ~19 semitones up, follows intonation
+      if (!this.parF) this.parF = 400;
     }
   }
   // Mock: replace the words with "meh". Each syllable is found from the loudness (a rise after a quiet gap
@@ -339,12 +343,12 @@ class RobotVoice extends AudioWorkletProcessor {
     if (onset) { this.since = 0; this.locMax = rms; this.dip = false; this.dipMin = 1; }
     if (!this.mockEH) {
       const shape = F => { const e = new Float64Array(N / 2 + 1); for (let k = 0; k <= N / 2; k++) { const f = k * binHz; let v = 1e-4; for (const [fc, bw, g] of F) { const r = f / fc; v += g / Math.sqrt((1 - r * r) ** 2 + (f * bw / (fc * fc)) ** 2); } e[k] = v; } return e; };
-      this.mockEH = shape([[580, 90, 1], [1850, 120, 0.75], [2550, 160, 0.4], [3500, 250, 0.15]]);
+      this.mockEH = shape([[600, 70, 1], [1900, 90, 0.8], [2600, 130, 0.35], [3500, 250, 0.1]]);
       this.mockM = shape([[260, 70, 1], [1100, 300, 0.06], [2200, 300, 0.04]]);
     }
-    const m = this.since < 0.045 ? 1 : this.since < 0.095 ? 1 - (this.since - 0.045) / 0.05 : 0;
+    const m = this.since < 0.06 ? 1 : this.since < 0.1 ? 1 - (this.since - 0.06) / 0.04 : 0;
     for (let k = 0; k <= N / 2; k++) env[k] = this.mockEH[k] * (1 - m) + this.mockM[k] * m;
-    return 1 - 0.45 * m;
+    return 1 - 0.7 * m;   // the hummed m is much quieter, so each meh starts clearly
   }
   addGrain(at, amp) {
     const g = this.grain, a = this.acc, base = Math.floor(at);
@@ -360,10 +364,17 @@ class RobotVoice extends AudioWorkletProcessor {
       let f0 = p.pitch === 'snap' ? (this.snapF || 130.8) : p.pitch === 'mock' ? (this.mockF || 180) : 440 * Math.pow(2, (p.note - 69) / 12);
       if (p.pitch === 'parrot') { // warble: fast vibrato plus a little random flutter
         this.flut = (this.flut || 0) * 0.9995 + (Math.random() - 0.5) * 0.004;
-        f0 = (this.parF || 330) * Math.pow(2, (0.45 * Math.sin(2 * Math.PI * 7.5 * this.t / sampleRate) + this.flut * 20) / 12);
+        f0 = (this.parF || 400) * Math.pow(2, (0.45 * Math.sin(2 * Math.PI * 7.5 * this.t / sampleRate) + this.flut * 20) / 12);
       }
       const per = sampleRate / f0;
-      if (this.t >= this.pulse[0]) { this.addGrain(this.t, Math.sqrt(per) * (p.harmony ? 0.75 : 1)); this.pulse[0] += per; if (this.pulse[0] < this.t) this.pulse[0] = this.t + per; }
+      if (this.t >= this.pulse[0]) {
+        // parrot: uneven, alternating pulses give the throaty rasp; mock: tiny natural wobble so it sounds human
+        let amp = 1, jit = 0;
+        if (p.pitch === 'parrot') { this.alt = !this.alt; amp = (this.alt ? 1 : 0.62) * (0.85 + Math.random() * 0.3); jit = (Math.random() - 0.5) * 0.1; }
+        else if (p.pitch === 'mock') { amp = 0.93 + Math.random() * 0.14; jit = (Math.random() - 0.5) * 0.025; }
+        this.addGrain(this.t, Math.sqrt(per) * amp * (p.harmony ? 0.75 : 1));
+        this.pulse[0] += per * (1 + jit); if (this.pulse[0] < this.t) this.pulse[0] = this.t + per;
+      }
       if (p.harmony) {
         const per2 = per * (p.harmony === 1 ? 2 : 1.5);
         if (this.t >= this.pulse[1]) { this.addGrain(this.t, Math.sqrt(per2) * 0.5); this.pulse[1] += per2; if (this.pulse[1] < this.t) this.pulse[1] = this.t + per2; }
@@ -481,14 +492,15 @@ function setChain(n, p, smooth) {
   set(n.pass.gain, robot ? 0 : 1);
   if (n.robot) { set(n.robot.gainNode.gain, robot ? 1 : 0); n.robot.port.postMessage(workletParams(p)); }
   set(n.hissG.gain, robot && p.pitch !== 'mock' ? 0.35 : 0);   // mock drops the real consonants
-  const r = p.ring / 100;
+  const character = p.pitch === 'parrot' || p.pitch === 'mock';   // keep animal and mock voices free of robot effects
+  const r = character ? 0 : p.ring / 100;
   set(n.ringDry.gain, 1 - r); set(n.ringWet.gain, r);
   set(n.osc.frequency, p.freq); n.osc.type = p.wave;
   // metal box resonates at a fixed small-room pitch, independent of the ring speed
   set(n.delay.delayTime, 0.0042);
-  const m = p.metal / 100;
+  const m = character ? 0 : p.metal / 100;
   set(n.fb.gain, m * 0.85); set(n.combWet.gain, m * 0.8);
-  n.shaper.curve = curve(p.grit / 10);
+  n.shaper.curve = curve(character ? 0 : p.grit / 10);
   const mix = p.mix / 100;
   set(n.wet.gain, mix * 1.4); set(n.dry.gain, 1 - mix);
   set(n.out.gain, p.vol / 100);
@@ -579,7 +591,7 @@ function showTake(t) {
   scr.classList.remove('flash'); void scr.offsetWidth; if (t) scr.classList.add('flash');
 }
 
-/* ---------- parrot "caw-caw" ----------
+/* ---------- parrot squawk ----------
    Two harsh syllables like a real parrot: a rough, croaky pulse source around 600-750 Hz with
    heavy jitter and alternating pulse strength (the "croak"), shaped by open "aw" resonances,
    a gentle rise-and-fall in pitch, and a smooth envelope. Each call is a little different. */
@@ -593,34 +605,34 @@ function biquad(x, type, f, Q, sr) {
   for (let i = 0; i < x.length; i++) { const v = (b0 * x[i] + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2) / a0; x2 = x1; x1 = x[i]; y2 = y1; y1 = v; y[i] = v; }
   return y;
 }
-function cawSyllable(sr, f0, len) {
-  const n = Math.floor(len * sr), src = new Float32Array(n);
+function makeCraw(sr) {
+  // one parrot "rraak": a rolled "rr" start, a harsh open "aa" with an uneven, croaky pulse around 550 Hz,
+  // a quick rise then fall in pitch, nasal beak resonances, and a rough noisy edge
+  const dur = 0.36 + Math.random() * 0.1, n = Math.floor(dur * sr), src = new Float32Array(n);
+  const f0 = 500 + Math.random() * 80;
   let next = 0, k = 0;
   while (next < n) {
     const t = next / n;
-    const f = f0 * (1 + 0.12 * Math.sin(Math.PI * Math.min(1, t * 1.3)) - 0.18 * t);   // rise, then sag
-    const period = sr / f * (1 + (Math.random() - 0.5) * 0.16);                          // jitter = rasp
-    const amp = (k % 2 ? 0.55 : 1) * (0.8 + Math.random() * 0.4);                         // croaky alternation + shimmer
-    const w = Math.max(4, Math.floor(period * 0.45));
+    const f = f0 * (t < 0.3 ? 1 + 0.22 * (t / 0.3) : 1.22 - 0.38 * ((t - 0.3) / 0.7));
+    const period = sr / f * (1 + (Math.random() - 0.5) * 0.22);
+    const amp = (k % 2 ? 0.5 : 1) * (0.75 + Math.random() * 0.5);
+    const w = Math.max(4, Math.floor(period * 0.35));
     for (let j = 0; j < w && next + j < n; j++) src[next + j] += amp * (1 - Math.cos(2 * Math.PI * j / w)) * 0.5;
     next += Math.max(2, Math.round(period)); k++;
   }
-  for (let i = 0; i < n; i++) src[i] += (Math.random() * 2 - 1) * 0.12;                   // breath
-  const hp = biquad(src, 'hp', 300, 0.7, sr);
-  const f1 = biquad(hp, 'bp', 1000 + Math.random() * 150, 2.2, sr), f2 = biquad(hp, 'bp', 1650 + Math.random() * 200, 2.5, sr), f3 = biquad(hp, 'bp', 2800, 3, sr);
+  for (let i = 0; i < n; i++) src[i] += (Math.random() * 2 - 1) * 0.3;
+  const hp = biquad(src, 'hp', 400, 0.7, sr);
+  const r1 = biquad(hp, 'bp', 1250 + Math.random() * 150, 2, sr), r2 = biquad(hp, 'bp', 2500 + Math.random() * 200, 2.5, sr), r3 = biquad(hp, 'bp', 3700, 3, sr);
   const mix = new Float32Array(n);
-  for (let i = 0; i < n; i++) mix[i] = f1[i] + f2[i] * 0.8 + f3[i] * 0.35;
-  const out = biquad(mix, 'lp', 5000, 0.7, sr);
-  const att = 0.012 * sr, rel = 0.07 * sr;
-  for (let i = 0; i < n; i++) out[i] *= Math.min(1, i / att) * Math.min(1, (n - i) / rel);
-  return out;
-}
-function makeCraw(sr) {
-  const f0 = 600 + Math.random() * 150, l1 = 0.17 + Math.random() * 0.05, l2 = l1 * (0.9 + Math.random() * 0.25), gap = 0.08 + Math.random() * 0.04;
-  const a = cawSyllable(sr, f0, l1), b = cawSyllable(sr, f0 * 0.94, l2);
-  const n = a.length + Math.floor(gap * sr) + b.length, out = new Float32Array(n);
-  out.set(a, 0); out.set(b, n - b.length);
-  let peak = 0; for (let i = 0; i < n; i++) peak = Math.max(peak, Math.abs(out[i]));
+  for (let i = 0; i < n; i++) mix[i] = r1[i] + r2[i] * 0.9 + r3[i] * 0.45;
+  const out = biquad(mix, 'lp', 5500, 0.7, sr);
+  const roll = 0.09 * sr, att = 0.015 * sr, rel = 0.09 * sr, chop = 26 + Math.random() * 6;
+  let peak = 0;
+  for (let i = 0; i < n; i++) {
+    const rr = i < roll ? 0.45 + 0.55 * (0.5 + 0.5 * Math.sin(2 * Math.PI * chop * i / sr)) : 1;   // rolled "rr"
+    out[i] *= rr * Math.min(1, i / att) * Math.min(1, (n - i) / rel) * (0.8 + 0.2 * (i / n));
+    peak = Math.max(peak, Math.abs(out[i]));
+  }
   for (let i = 0; i < n; i++) out[i] *= 0.7 / (peak || 1);
   const buf = ctx.createBuffer(1, n, sr); buf.getChannelData(0).set(out);
   return buf;
