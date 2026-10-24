@@ -19,6 +19,7 @@
   color-scheme:dark;
 }
 *{box-sizing:border-box}
+[hidden]{display:none!important}
 html,body{height:100%;margin:0}
 body{
   background:var(--bg);color:var(--fg);font:15px/1.4 var(--mono);
@@ -51,6 +52,7 @@ canvas{width:100%;height:64px;display:block}
 #msg{font-size:12px;color:var(--dim);min-height:1.4em}
 
 .rack{display:flex;flex-direction:column;gap:14px}
+.sect{font:700 13px var(--display);letter-spacing:.16em;text-transform:uppercase;color:var(--fg);border-bottom:1px solid var(--line);padding-bottom:6px;margin-top:4px}
 .fader label{display:flex;justify-content:space-between;font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim);margin-bottom:6px}
 .fader output{color:var(--accent);font-variant-numeric:tabular-nums}
 input[type=range]{-webkit-appearance:none;appearance:none;width:100%;height:36px;background:transparent;margin:0}
@@ -92,8 +94,24 @@ button:focus-visible{outline:2px solid var(--fg);outline-offset:2px}
   </div>
 
   <div class="rack">
+    <div class="sect">Pitch</div>
+    <div class="row" role="group" aria-label="Pitch mode">
+      <button class="chip" data-pitch="off" aria-pressed="true">Natural</button>
+      <button class="chip" data-pitch="mono" aria-pressed="false">Monotone</button>
+      <button class="chip" data-pitch="snap" aria-pressed="false">Snap</button>
+    </div>
+    <div class="fader" id="noteFader"><label for="note"><span id="noteL">Note</span> <output id="noteV"></output></label>
+      <input type="range" id="note" min="36" max="72" step="1" value="48"></div>
+    <div class="row" id="scaleRow" role="group" aria-label="Scale">
+      <button class="chip" data-scale="chromatic" aria-pressed="false">Chromatic</button>
+      <button class="chip" data-scale="major" aria-pressed="true">Major</button>
+      <button class="chip" data-scale="minor" aria-pressed="false">Minor</button>
+    </div>
+    <div class="sect">Robot</div>
     <div class="fader"><label for="freq">Robot tone <output id="freqV"></output></label>
       <input type="range" id="freq" min="10" max="400" step="1" value="60"></div>
+    <div class="fader"><label for="ring">Ring mod <output id="ringV"></output></label>
+      <input type="range" id="ring" min="0" max="100" step="1" value="100"></div>
     <div class="fader"><label for="metal">Metallic <output id="metalV"></output></label>
       <input type="range" id="metal" min="0" max="90" step="1" value="45"></div>
     <div class="fader"><label for="grit">Grit <output id="gritV"></output></label>
@@ -128,19 +146,74 @@ button:focus-visible{outline:2px solid var(--fg);outline-offset:2px}
 <script>
 const $ = id => document.getElementById(id);
 const app = $('app');
-const ids = ['freq','metal','grit','mix','vol'];
-const fmt = { freq: v => v + ' Hz', metal: v => v + '%', grit: v => v + '%', mix: v => v + '%', vol: v => v + '%' };
-let wave = 'sine', mode = 'rec', loop = true;
+const ids = ['note','freq','ring','metal','grit','mix','vol'];
+const NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+const SCALES = { chromatic: [0,1,2,3,4,5,6,7,8,9,10,11], major: [0,2,4,5,7,9,11], minor: [0,2,3,5,7,8,10] };
+const noteName = m => NAMES[m % 12] + (Math.floor(m / 12) - 1);
+const mtof = m => 440 * Math.pow(2, (m - 69) / 12);
+const fmt = {
+  note: v => pitch === 'snap' ? NAMES[v % 12] + ' ' + scale : noteName(+v) + ' · ' + Math.round(mtof(v)) + ' Hz',
+  freq: v => v + ' Hz', ring: v => v + '%', metal: v => v + '%', grit: v => v + '%', mix: v => v + '%', vol: v => v + '%'
+};
+let wave = 'sine', mode = 'rec', loop = true, pitch = 'off', scale = 'major';
 
 try {
   const s = JSON.parse(localStorage.getItem('robotVoice') || '{}');
   ids.forEach(k => { if (s[k] != null) $(k).value = s[k]; });
-  if (s.wave) wave = s.wave;
-  if (s.mode) mode = s.mode;
-  if (s.loop != null) loop = s.loop;
+  if (s.wave) wave = s.wave; if (s.mode) mode = s.mode; if (s.loop != null) loop = s.loop;
+  if (s.pitch) pitch = s.pitch; if (s.scale) scale = s.scale;
 } catch (e) {}
 function save() {
-  try { const s = { wave, mode, loop }; ids.forEach(k => s[k] = $(k).value); localStorage.setItem('robotVoice', JSON.stringify(s)); } catch (e) {}
+  try { const s = { wave, mode, loop, pitch, scale }; ids.forEach(k => s[k] = $(k).value); localStorage.setItem('robotVoice', JSON.stringify(s)); } catch (e) {}
+}
+
+/* ---------- pitch detection (YIN-style) and snapping ---------- */
+function detectPitch(buf, sr) {
+  const n = buf.length >> 1, x = new Float32Array(n), rate = sr / 2;
+  let rms = 0;
+  for (let i = 0; i < n; i++) { x[i] = buf[i * 2]; rms += x[i] * x[i]; }
+  if (Math.sqrt(rms / n) < 0.01) return 0;
+  const minLag = Math.floor(rate / 600), maxLag = Math.min(Math.floor(rate / 65), n >> 1), W = n - maxLag;
+  const d = new Float32Array(maxLag + 1);
+  for (let tau = 1; tau <= maxLag; tau++) {
+    let s = 0;
+    for (let j = 0; j < W; j++) { const v = x[j] - x[j + tau]; s += v * v; }
+    d[tau] = s;
+  }
+  let sum = 0;
+  for (let tau = 1; tau <= maxLag; tau++) {
+    sum += d[tau]; const c = d[tau] * tau / (sum || 1); d[tau] = c;
+  }
+  for (let tau = minLag; tau < maxLag; tau++) {
+    if (d[tau] < 0.15) {
+      while (tau + 1 < maxLag && d[tau + 1] < d[tau]) tau++;
+      const a = d[tau - 1], b = d[tau], c = d[tau + 1], den = a - 2 * b + c;
+      const t = den ? tau + (a - c) / (2 * den) : tau;
+      return rate / t;
+    }
+  }
+  return 0;
+}
+function snapFreq(f, p) {
+  const m = 69 + 12 * Math.log2(f / 440), root = p.note % 12, set = SCALES[p.scale] || SCALES.chromatic;
+  let best = Math.round(m), bestD = Infinity;
+  for (let k = Math.floor(m) - 2; k <= Math.ceil(m) + 2; k++) {
+    if (set.includes(((k - root) % 12 + 12) % 12) && Math.abs(k - m) < bestD) { best = k; bestD = Math.abs(k - m); }
+  }
+  return mtof(best);
+}
+let pitchTimer = null, lastSnap = 0;
+function pitchLoop() {
+  clearInterval(pitchTimer); pitchTimer = null;
+  if (!chain || pitch !== 'snap' || !busy()) return;
+  const buf = new Float32Array(chain.pitchAn.fftSize);
+  pitchTimer = setInterval(() => {
+    chain.pitchAn.getFloatTimeDomainData(buf);
+    const f = detectPitch(buf, ctx.sampleRate);
+    if (!f) return;
+    const target = snapFreq(f, params());
+    if (target !== lastSnap) { lastSnap = target; chain.vocOsc.frequency.setTargetAtTime(target, ctx.currentTime, 0.008); }
+  }, 30);
 }
 
 /* ---------- effect chain (works on live and offline contexts) ---------- */
@@ -150,28 +223,64 @@ function curve(amount) {
   return c;
 }
 function params() {
-  const p = {}; ids.forEach(k => p[k] = +$(k).value); p.wave = wave; return p;
+  const p = {}; ids.forEach(k => p[k] = +$(k).value); p.wave = wave; p.pitch = pitch; p.scale = scale; return p;
 }
+const VOC_GAIN = 20;
+const RECT = (() => { const c = new Float32Array(1024); for (let i = 0; i < 1024; i++) c[i] = Math.abs(i * 2 / 1024 - 1); return c; })();
 function buildChain(c) {
   const input = c.createGain();
   const hp = c.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 90;
+  input.connect(hp);
+  const pitchAn = c.createAnalyser(); pitchAn.fftSize = 2048; input.connect(pitchAn);
+
+  // Pitch stage. Natural: voice passes straight through.
+  // Monotone/Snap: a 16-band channel vocoder re-sings the voice on a sawtooth at a fixed or snapped pitch.
+  const robotIn = c.createGain();
+  const pass = c.createGain(); hp.connect(pass); pass.connect(robotIn);
+  const vocOut = c.createGain(); vocOut.connect(robotIn);
+  const vocOsc = c.createOscillator(); vocOsc.type = 'sawtooth'; vocOsc.frequency.value = 130.8; vocOsc.start();
+  const BANDS = 16, lo = 140, hi = 6500;
+  for (let i = 0; i < BANDS; i++) {
+    const f = lo * Math.pow(hi / lo, i / (BANDS - 1));
+    const mb = c.createBiquadFilter(); mb.type = 'bandpass'; mb.frequency.value = f; mb.Q.value = 7;
+    const rect = c.createWaveShaper(); rect.curve = RECT;
+    const env = c.createBiquadFilter(); env.type = 'lowpass'; env.frequency.value = 35;
+    const cb = c.createBiquadFilter(); cb.type = 'bandpass'; cb.frequency.value = f; cb.Q.value = 7;
+    const vca = c.createGain(); vca.gain.value = 0;
+    hp.connect(mb); mb.connect(rect); rect.connect(env); env.connect(vca.gain);
+    vocOsc.connect(cb); cb.connect(vca); vca.connect(vocOut);
+  }
+  // keep consonants (s, t, k) understandable
+  const hiss = c.createBiquadFilter(); hiss.type = 'highpass'; hiss.frequency.value = 4500;
+  const hissG = c.createGain(); hissG.gain.value = 0.35; hp.connect(hiss); hiss.connect(hissG); hissG.connect(vocOut);
+
+  // Ring modulator, blended by the Ring mod fader
   const ring = c.createGain(); ring.gain.value = 0;
   const osc = c.createOscillator(); osc.connect(ring.gain); osc.start();
+  const ringDry = c.createGain(), ringWet = c.createGain();
   const shaper = c.createWaveShaper(); shaper.oversample = '2x';
+  robotIn.connect(ringDry); ringDry.connect(shaper);
+  robotIn.connect(ring); ring.connect(ringWet); ringWet.connect(shaper);
   const bp = c.createBiquadFilter(); bp.type = 'peaking'; bp.frequency.value = 1800; bp.Q.value = 1; bp.gain.value = 6;
   const delay = c.createDelay(0.05), fb = c.createGain(), combWet = c.createGain();
   const wet = c.createGain(), dry = c.createGain(), out = c.createGain();
   const comp = c.createDynamicsCompressor(); comp.threshold.value = -18; comp.ratio.value = 6;
   const analyser = c.createAnalyser(); analyser.fftSize = 1024;
-  input.connect(hp); hp.connect(dry); hp.connect(ring);
-  ring.connect(shaper); shaper.connect(bp); bp.connect(wet); bp.connect(delay);
+  hp.connect(dry); shaper.connect(bp); bp.connect(wet); bp.connect(delay);
   delay.connect(fb); fb.connect(delay); delay.connect(combWet); combWet.connect(wet);
   wet.connect(out); dry.connect(out); out.connect(comp); comp.connect(analyser); analyser.connect(c.destination);
-  return { c, input, osc, shaper, delay, fb, combWet, wet, dry, out, analyser };
+  return { c, input, pitchAn, pass, vocOut, vocOsc, hissG, osc, ringDry, ringWet, shaper, delay, fb, combWet, wet, dry, out, analyser };
 }
 function setChain(n, p, smooth) {
   const t = n.c.currentTime;
   const set = (param, v) => smooth ? param.setTargetAtTime(v, t, 0.03) : (param.value = v);
+  const voc = p.pitch !== 'off';
+  set(n.pass.gain, voc ? 0 : 1);
+  set(n.vocOut.gain, voc ? VOC_GAIN : 0);
+  set(n.hissG.gain, voc ? 0.35 : 0);
+  if (p.pitch === 'mono') set(n.vocOsc.frequency, mtof(p.note));
+  const r = p.ring / 100;
+  set(n.ringDry.gain, 1 - r); set(n.ringWet.gain, r);
   set(n.osc.frequency, p.freq);
   n.osc.type = p.wave;
   set(n.delay.delayTime, Math.min(0.045, Math.max(0.002, 1 / Math.max(p.freq, 25))));
@@ -227,7 +336,7 @@ async function startLive() {
     const lat = ((ctx.baseLatency || 0) + (ctx.outputLatency || 0)) * 1000;
     $('info').textContent = lat ? Math.round(lat) + ' ms' : '';
     liveStream.getAudioTracks()[0].onended = () => { if (liveStream) { stopLive(); setStatus('err', 'Mic lost', 'Another app took the microphone. Tap Start again.'); } };
-    lockScreen(); scope(chain.analyser);
+    lockScreen(); scope(chain.analyser); pitchLoop();
   } catch (e) { stopLive(); setStatus('err', 'Error', micError(e)); }
 }
 function stopLive() {
@@ -237,7 +346,7 @@ function stopLive() {
   $('liveBtn').textContent = 'Start'; $('liveBtn').classList.remove('stop');
   $('info').textContent = '';
   setStatus('', 'Standby', 'Plug in headphones, then tap Start.');
-  unlockScreen(); scope(null);
+  unlockScreen(); scope(null); pitchLoop();
 }
 
 /* ---------- record & replay mode ---------- */
@@ -300,7 +409,7 @@ function startPlay() {
   player.start(); playStart = ctx.currentTime;
   $('playBtn').textContent = 'Stop'; $('playBtn').classList.add('stop');
   setStatus('on', 'Playing', loop ? 'Looping. Move the faders to shape the voice.' : 'Playing once.');
-  lockScreen(); scope(chain.analyser);
+  lockScreen(); scope(chain.analyser); pitchLoop();
   tick();
 }
 function tick() {
@@ -313,7 +422,7 @@ function stopPlay() {
   if (player) { player.onended = null; try { player.stop(); } catch (e) {} player.disconnect(); player = null; }
   $('playBtn').textContent = 'Play'; $('playBtn').classList.remove('stop');
   if (recBuffer && mode === 'rec' && !recStream) { setStatus('', 'Ready', 'Tap Play to hear it again, or Save to keep it.'); $('info').textContent = clock(recBuffer.duration); }
-  scope(null); unlockScreen();
+  scope(null); unlockScreen(); pitchLoop();
 }
 
 /* ---------- save: render offline with current settings, export WAV ---------- */
@@ -334,6 +443,17 @@ async function saveRobot() {
     const rate = recBuffer.sampleRate, len = Math.ceil((recBuffer.duration + 0.4) * rate);
     const off = new (window.OfflineAudioContext || window.webkitOfflineAudioContext)(1, len, rate);
     const n = buildChain(off); setChain(n, params(), false);
+    const p = params();
+    if (p.pitch === 'snap') {
+      const data = recBuffer.getChannelData(0), hop = 1024, win = 2048;
+      let prev = 0;
+      for (let i = 0; i + win <= data.length; i += hop) {
+        const f = detectPitch(data.subarray(i, i + win), rate);
+        if (!f) continue;
+        const target = snapFreq(f, p);
+        if (target !== prev) { n.vocOsc.frequency.setTargetAtTime(target, (i + win / 2) / rate, 0.008); prev = target; }
+      }
+    }
     const src = off.createBufferSource(); src.buffer = recBuffer; src.connect(n.input); src.start();
     const rendered = await off.startRendering();
     const file = new File([wav(rendered)], 'robot-voice-' + new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-') + '.wav', { type: 'audio/wav' });
@@ -372,10 +492,15 @@ function busy() { return !!(liveStream || recStream || player); }
 function render() {
   ids.forEach(k => { const el = $(k); $(k + 'V').textContent = fmt[k](el.value); el.style.setProperty('--p', ((el.value - el.min) / (el.max - el.min) * 100) + '%'); });
   document.querySelectorAll('[data-wave]').forEach(b => b.setAttribute('aria-pressed', b.dataset.wave === wave));
+  document.querySelectorAll('[data-pitch]').forEach(b => b.setAttribute('aria-pressed', b.dataset.pitch === pitch));
+  document.querySelectorAll('[data-scale]').forEach(b => b.setAttribute('aria-pressed', b.dataset.scale === scale));
+  $('noteFader').hidden = pitch === 'off'; $('scaleRow').hidden = pitch !== 'snap';
+  $('noteL').textContent = pitch === 'snap' ? 'Key' : 'Note';
   $('modeRec').setAttribute('aria-pressed', mode === 'rec'); $('modeLive').setAttribute('aria-pressed', mode === 'live');
   $('recPanel').hidden = mode !== 'rec'; $('livePanel').hidden = mode !== 'live';
   $('loopBtn').setAttribute('aria-pressed', loop);
   if (chain) setChain(chain, params(), true);
+  if (pitch === 'snap') { if (!pitchTimer) pitchLoop(); } else pitchLoop();
   save();
 }
 function setMode(m) {
@@ -396,6 +521,8 @@ $('loopBtn').onclick = () => { loop = !loop; if (player) player.loop = loop; ren
 $('saveBtn').onclick = saveRobot;
 ids.forEach(k => $(k).addEventListener('input', render));
 document.querySelectorAll('[data-wave]').forEach(b => b.addEventListener('click', () => { wave = b.dataset.wave; render(); }));
+document.querySelectorAll('[data-pitch]').forEach(b => b.addEventListener('click', () => { pitch = b.dataset.pitch; lastSnap = 0; render(); }));
+document.querySelectorAll('[data-scale]').forEach(b => b.addEventListener('click', () => { scale = b.dataset.scale; lastSnap = 0; render(); }));
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible' && busy()) {
     lockScreen(); if (ctx && ctx.state !== 'running') ctx.resume().catch(() => {});

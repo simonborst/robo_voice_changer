@@ -11,6 +11,9 @@ A robot voice changer that runs in the browser. Built for iPhone Safari, and it 
 
 | Fader | What it does |
 | --- | --- |
+| Pitch: Natural / Monotone / Snap | Natural keeps your own pitch. Monotone re-sings your voice on one fixed note (a 16-band vocoder). Snap tracks your pitch and snaps it to the nearest note in the chosen key, like hard auto-tune. |
+| Note / Key | The fixed note in Monotone, or the key root in Snap (with Chromatic, Major or Minor scale). |
+| Ring mod | How much of the ring modulator is applied. Lower it in Snap mode to keep the notes in tune. |
 | Robot tone | Frequency of the ring modulator (10–400 Hz). Low values sound like a classic sci-fi robot, high values like a buzzy droid. |
 | Metallic | Amount of the short, resonant echo that gives the tinny, metal-box ring. |
 | Grit | Soft distortion. |
