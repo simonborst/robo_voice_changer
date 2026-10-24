@@ -70,6 +70,14 @@ input[type=range]:focus-visible{outline:2px solid var(--accent);outline-offset:2
 .big.stop{background:var(--panel);color:var(--warn);border:1px solid var(--warn)}
 .big.alt{background:var(--panel);color:var(--fg);border:1px solid var(--line)}
 .big:disabled{opacity:.35}
+.meter{position:relative;height:14px;border-radius:3px;background:#0b0d0f;border:1px solid var(--line);overflow:hidden}
+.meter i{position:absolute;inset:0 auto 0 0;width:0;background:var(--live);transition:width 60ms linear}
+.meter.hot i{background:var(--warn)}
+.meter b{position:absolute;top:-1px;bottom:-1px;width:2px}
+#mOn{background:var(--accent)} #mOff{background:var(--dim)}
+.legend{display:flex;justify-content:space-between;font-size:11px;color:var(--dim);letter-spacing:.06em}
+.legend span::before{content:"";display:inline-block;width:8px;height:8px;margin-right:6px;vertical-align:0}
+.legend .lOn::before{background:var(--accent)} .legend .lOff::before{background:var(--dim)}
 .pair{display:flex;gap:10px}.pair .big{flex:1}
 button:focus-visible{outline:2px solid var(--fg);outline-offset:2px}
 .tip{font-size:11px;color:var(--dim);text-align:center;margin:0}
@@ -83,7 +91,8 @@ button:focus-visible{outline:2px solid var(--fg);outline-offset:2px}
   </header>
 
   <div class="modes" role="group" aria-label="Mode">
-    <button id="modeRec" aria-pressed="true">Record &amp; replay</button>
+    <button id="modeRec" aria-pressed="true">Record</button>
+    <button id="modeRep" aria-pressed="false">Repeat</button>
     <button id="modeLive" aria-pressed="false">Live</button>
   </div>
 
@@ -147,6 +156,23 @@ button:focus-visible{outline:2px solid var(--fg);outline-offset:2px}
       <button class="chip" id="saveBtn" disabled style="flex:0 0 auto;padding:0 16px">Save</button>
     </div>
     <p class="tip">Record a line, then play it back and move the faders while it loops.</p>
+  </div>
+
+  <div class="transport" id="repPanel" hidden>
+    <div class="meter" id="meter" aria-hidden="true"><i id="repBar"></i><b id="mOff"></b><b id="mOn"></b></div>
+    <div class="legend"><span class="lOn">Start level</span><span class="lOff">Silence level</span></div>
+    <div class="fader"><label for="thrOn">Start level <output id="thrOnV"></output></label>
+      <input type="range" id="thrOn" min="-70" max="-5" step="1" value="-35"></div>
+    <div class="fader"><label for="thrOff">Silence level <output id="thrOffV"></output></label>
+      <input type="range" id="thrOff" min="-80" max="-10" step="1" value="-48"></div>
+    <div class="fader"><label for="hold">Silence wait <output id="holdV"></output></label>
+      <input type="range" id="hold" min="3" max="30" step="1" value="10"></div>
+    <div class="pair">
+      <button class="big" id="repBtn">Start</button>
+      <button class="big alt" id="repNext" hidden>Listen</button>
+      <button class="chip" id="repLoop" aria-pressed="false" style="flex:0 0 auto;padding:0 16px">Loop</button>
+    </div>
+    <p class="tip">Talk above the start level to record. After the silence wait, it repeats you as a robot, then listens again.</p>
   </div>
 
   <div class="transport" id="livePanel" hidden>
@@ -276,11 +302,25 @@ class RobotVoice extends AudioWorkletProcessor {
   }
 }
 registerProcessor('robot-voice', RobotVoice);
+
+// Mic tap for Repeat mode: sends the raw mic audio to the page in 1024-sample chunks
+class Tap extends AudioWorkletProcessor {
+  constructor() { super(); this.buf = new Float32Array(1024); this.n = 0; }
+  process(inputs) {
+    const ch = inputs[0] && inputs[0][0];
+    if (ch) for (let i = 0; i < ch.length; i++) {
+      this.buf[this.n++] = ch[i];
+      if (this.n === this.buf.length) { this.port.postMessage(this.buf); this.buf = new Float32Array(1024); this.n = 0; }
+    }
+    return true;
+  }
+}
+registerProcessor('tap', Tap);
 </script>
 <script>
 const $ = id => document.getElementById(id);
 const app = $('app');
-const ids = ['note','tone','size','metal','mix','vol','ring','freq','grit'];
+const ids = ['note','tone','size','metal','mix','vol','ring','freq','grit','thrOn','thrOff','hold'];
 const NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
 const SCALES = { chromatic: [0,1,2,3,4,5,6,7,8,9,10,11], major: [0,2,4,5,7,9,11], minor: [0,2,3,5,7,8,10] };
 const noteName = m => NAMES[m % 12] + (Math.floor(m / 12) - 1);
@@ -289,18 +329,19 @@ const fmt = {
   note: v => pitch === 'snap' ? NAMES[v % 12] + ' ' + scale : noteName(+v) + ' · ' + Math.round(mtof(v)) + ' Hz',
   tone: v => v < 34 ? 'Warm' : v < 67 ? 'Clear' : 'Bright',
   size: v => v == 0 ? 'Human' : v < 0 ? 'Bigger ' + (-v) : 'Smaller ' + v,
+  thrOn: v => v + ' dB', thrOff: v => v + ' dB', hold: v => (v / 10).toFixed(1) + ' s',
   metal: v => v + '%', mix: v => v + '%', vol: v => v + '%', ring: v => v + '%', freq: v => v + ' Hz', grit: v => v + '%'
 };
-let wave = 'sine', mode = 'rec', loop = true, pitch = 'mono', scale = 'major', harmony = 0;
+let wave = 'sine', mode = 'rec', loop = true, pitch = 'mono', scale = 'major', harmony = 0, repLoop = false;
 const STORE = 'robotVoice3';
 try {
   const s = JSON.parse(localStorage.getItem(STORE) || '{}');
   ids.forEach(k => { if (s[k] != null) $(k).value = s[k]; });
   if (s.wave) wave = s.wave; if (s.mode) mode = s.mode; if (s.loop != null) loop = s.loop;
-  if (s.pitch) pitch = s.pitch; if (s.scale) scale = s.scale; if (s.harmony != null) harmony = s.harmony;
+  if (s.pitch) pitch = s.pitch; if (s.scale) scale = s.scale; if (s.harmony != null) harmony = s.harmony; if (s.repLoop != null) repLoop = s.repLoop;
 } catch (e) {}
 function save() {
-  try { const s = { wave, mode, loop, pitch, scale, harmony }; ids.forEach(k => s[k] = $(k).value); localStorage.setItem(STORE, JSON.stringify(s)); } catch (e) {}
+  try { const s = { wave, mode, loop, pitch, scale, harmony, repLoop }; ids.forEach(k => s[k] = $(k).value); localStorage.setItem(STORE, JSON.stringify(s)); } catch (e) {}
 }
 
 /* ---------- effect chain (works on live and offline contexts) ---------- */
@@ -567,8 +608,114 @@ function draw() {
   g.stroke(); raf = requestAnimationFrame(draw);
 }
 
+/* ---------- repeat-after-me mode ---------- */
+const PREROLL_S = 0.35, MAX_S = 20, MIN_VOICE_S = 0.2, TAIL_S = 0.3;
+let repOn = false, repState = 'off', repStream = null, repSrc = null, repTap = null, repSink = null, repMeter = null, repPlayer = null;
+let preroll = [], take = [], loudRun = 0, quietS = 0, voicedS = 0, takeS = 0, lastLoudLen = 0;
+function chunkDb(a) { let s = 0; for (let i = 0; i < a.length; i++) s += a[i] * a[i]; return 10 * Math.log10(s / a.length + 1e-12); }
+function meterPos(db) { return Math.max(0, Math.min(100, (db + 80) / 80 * 100)); }
+function drawMeter(db) {
+  $('repBar').style.width = meterPos(db) + '%';
+  $('meter').classList.toggle('hot', db > +$('thrOn').value);
+}
+function placeMarkers() { $('mOn').style.left = meterPos(+$('thrOn').value) + '%'; $('mOff').style.left = meterPos(+$('thrOff').value) + '%'; }
+async function startRepeat() {
+  try {
+    await engine();
+    if (!window.AudioWorkletNode || !ctx.audioWorklet) throw new Error('this browser cannot run Repeat mode');
+    repOn = true; lockScreen();
+    $('repBtn').textContent = 'Stop'; $('repBtn').classList.add('stop');
+    await repListen();
+  } catch (e) { stopRepeat(); setStatus('err', 'Error', micError(e)); }
+}
+async function repListen() {
+  if (!repOn) return;
+  session('play-and-record');
+  repStream = await getMic();
+  if (!repOn) { repStream.getTracks().forEach(t => t.stop()); repStream = null; return; }
+  repSrc = ctx.createMediaStreamSource(repStream);
+  repTap = new AudioWorkletNode(ctx, 'tap', { numberOfInputs: 1, numberOfOutputs: 1, channelCount: 1, channelCountMode: 'explicit' });
+  repSink = ctx.createGain(); repSink.gain.value = 0;
+  repMeter = ctx.createAnalyser(); repMeter.fftSize = 1024;
+  repSrc.connect(repTap); repTap.connect(repSink); repSink.connect(ctx.destination); repSrc.connect(repMeter);
+  preroll = []; take = []; loudRun = 0;
+  repTap.port.onmessage = e => onChunk(e.data);
+  repState = 'listening'; $('repNext').hidden = true;
+  setStatus('on', 'Listening', 'Say something above the start level.');
+  $('info').textContent = '';
+  scope(repMeter);
+}
+function closeRepMic() {
+  if (repTap) { repTap.port.onmessage = null; repTap.disconnect(); }
+  if (repSrc) repSrc.disconnect();
+  if (repSink) repSink.disconnect();
+  if (repStream) repStream.getTracks().forEach(t => t.stop());
+  repTap = repSrc = repSink = repMeter = repStream = null;
+}
+function onChunk(chunk) {
+  const db = chunkDb(chunk), dur = chunk.length / ctx.sampleRate;
+  drawMeter(db);
+  const on = +$('thrOn').value, off = +$('thrOff').value, hold = +$('hold').value / 10;
+  if (repState === 'listening') {
+    preroll.push(chunk);
+    while (preroll.length * dur > PREROLL_S) preroll.shift();
+    loudRun = db > on ? loudRun + 1 : 0;
+    if (loudRun >= 2) {
+      take = preroll.slice(); takeS = take.length * dur; voicedS = 2 * dur; quietS = 0; lastLoudLen = take.length;
+      repState = 'recording';
+      setStatus('rec', 'Recording', 'Recording. Stop talking to hear it back.');
+    }
+  } else if (repState === 'recording') {
+    take.push(chunk); takeS += dur;
+    if (db > off) { quietS = 0; lastLoudLen = take.length; } else quietS += dur;
+    if (db > on) voicedS += dur;
+    $('info').textContent = takeS.toFixed(1) + ' s';
+    if (quietS >= hold || takeS >= MAX_S) finishTake(dur);
+  }
+}
+function finishTake(dur) {
+  repState = 'processing';
+  closeRepMic();
+  if (voicedS < MIN_VOICE_S) { $('msg').textContent = 'Too short. Listening again.'; return repListen(); }
+  const keep = take.slice(0, Math.min(take.length, lastLoudLen + Math.ceil(TAIL_S / dur)));
+  const len = keep.reduce((n, c) => n + c.length, 0);
+  const buf = ctx.createBuffer(1, len, ctx.sampleRate), d = buf.getChannelData(0);
+  let o = 0, peak = 0; for (const c of keep) { d.set(c, o); o += c.length; }
+  for (let i = 0; i < len; i++) peak = Math.max(peak, Math.abs(d[i]));
+  if (peak > 0.001) for (let i = 0; i < len; i++) d[i] *= 0.95 / peak;
+  // fade in/out to avoid clicks
+  const f = Math.min(480, len >> 2); for (let i = 0; i < f; i++) { d[i] *= i / f; d[len - 1 - i] *= i / f; }
+  take = []; preroll = [];
+  repPlay(buf);
+}
+function repPlay(buf) {
+  if (!repOn) return;
+  session('playback'); ctx.resume();
+  repState = 'playing';
+  repPlayer = ctx.createBufferSource(); repPlayer.buffer = buf; repPlayer.loop = repLoop;
+  repPlayer.connect(chain.input);
+  repPlayer.onended = () => { repPlayer = null; if (repOn && !repLoop) setTimeout(repListen, 350); };
+  repPlayer.start();
+  $('repNext').hidden = !repLoop;
+  setStatus('on', 'Repeating', repLoop ? 'Looping. Tap Listen for a new line.' : 'Repeating you…');
+  $('info').textContent = buf.duration.toFixed(1) + ' s';
+  drawMeter(-100); scope(chain.analyser);
+}
+function repNext() {
+  if (repPlayer) { repPlayer.onended = null; try { repPlayer.stop(); } catch (e) {} repPlayer.disconnect(); repPlayer = null; }
+  setTimeout(repListen, 200);
+}
+function stopRepeat() {
+  repOn = false; repState = 'off';
+  if (repPlayer) { repPlayer.onended = null; try { repPlayer.stop(); } catch (e) {} repPlayer.disconnect(); repPlayer = null; }
+  closeRepMic(); take = []; preroll = [];
+  $('repBtn').textContent = 'Start'; $('repBtn').classList.remove('stop'); $('repNext').hidden = true;
+  drawMeter(-100); scope(null); unlockScreen();
+  setStatus('', 'Standby', 'Tap Start, then talk. Set the levels with the meter.'); $('info').textContent = '';
+}
+
 /* ---------- UI ---------- */
-function busy() { return !!(liveStream || recStream || player); }
+function busy() { return !!(liveStream || recStream || player || repOn); }
 function render() {
   ids.forEach(k => { const el = $(k); $(k + 'V').textContent = fmt[k](el.value); el.style.setProperty('--p', ((el.value - el.min) / (el.max - el.min) * 100) + '%'); });
   const press = (sel, key, val) => document.querySelectorAll(sel).forEach(b => b.setAttribute('aria-pressed', String(b.dataset[key]) === String(val)));
@@ -576,23 +723,32 @@ function render() {
   document.querySelectorAll('[data-robot]').forEach(el => el.hidden = pitch === 'off');
   $('scaleRow').hidden = pitch !== 'snap';
   $('noteL').textContent = pitch === 'snap' ? 'Key' : 'Note';
-  $('modeRec').setAttribute('aria-pressed', mode === 'rec'); $('modeLive').setAttribute('aria-pressed', mode === 'live');
-  $('recPanel').hidden = mode !== 'rec'; $('livePanel').hidden = mode !== 'live';
+  $('modeRec').setAttribute('aria-pressed', mode === 'rec'); $('modeRep').setAttribute('aria-pressed', mode === 'repeat'); $('modeLive').setAttribute('aria-pressed', mode === 'live');
+  $('recPanel').hidden = mode !== 'rec'; $('repPanel').hidden = mode !== 'repeat'; $('livePanel').hidden = mode !== 'live';
+  $('repLoop').setAttribute('aria-pressed', repLoop); placeMarkers();
   $('loopBtn').setAttribute('aria-pressed', loop);
   if (chain) setChain(chain, params(), true);
   save();
 }
 function setMode(m) {
   if (m === mode) return;
-  if (mode === 'live') stopLive(); else { stopRec(); stopPlay(); }
+  if (mode === 'live') stopLive(); else if (mode === 'repeat') stopRepeat(); else { stopRec(); stopPlay(); }
   mode = m; render();
   if (m === 'live') setStatus('', 'Standby', 'Plug in headphones, then tap Start.');
+  else if (m === 'repeat') { setStatus('', 'Standby', 'Tap Start, then talk. Set the levels with the meter.'); $('info').textContent = ''; }
   else if (recBuffer) { setStatus('', 'Ready', 'Tap Play to hear your last recording.'); $('info').textContent = clock(recBuffer.duration); }
   else { setStatus('', 'Standby', 'Tap Record and say something.'); $('info').textContent = '0:00'; }
 }
 
 $('modeRec').onclick = () => setMode('rec');
 $('modeLive').onclick = () => setMode('live');
+$('modeRep').onclick = () => setMode('repeat');
+$('repBtn').onclick = () => repOn ? stopRepeat() : startRepeat();
+$('repNext').onclick = repNext;
+$('repLoop').onclick = () => { repLoop = !repLoop; if (repPlayer) { repPlayer.loop = repLoop; $('repNext').hidden = !repLoop; } render(); };
+// keep the silence level at least 3 dB under the start level
+$('thrOn').addEventListener('input', () => { if (+$('thrOff').value > +$('thrOn').value - 3) $('thrOff').value = +$('thrOn').value - 3; });
+$('thrOff').addEventListener('input', () => { if (+$('thrOff').value > +$('thrOn').value - 3) $('thrOn').value = +$('thrOff').value + 3; });
 $('liveBtn').onclick = () => liveStream ? stopLive() : startLive();
 $('recBtn').onclick = () => recStream ? stopRec() : startRec();
 $('playBtn').onclick = () => player ? stopPlay() : startPlay();
@@ -611,7 +767,7 @@ document.addEventListener('visibilitychange', () => {
 });
 
 render(); flat();
-setStatus('', 'Standby', mode === 'live' ? 'Plug in headphones, then tap Start.' : 'Tap Record and say something.');
+setStatus('', 'Standby', mode === 'live' ? 'Plug in headphones, then tap Start.' : mode === 'repeat' ? 'Tap Start, then talk. Set the levels with the meter.' : 'Tap Record and say something.');
 </script>
 </body>
 </html>
