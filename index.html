@@ -609,9 +609,9 @@ function draw() {
 }
 
 /* ---------- repeat-after-me mode ---------- */
-const PREROLL_S = 0.35, MAX_S = 20, MIN_VOICE_S = 0.2, TAIL_S = 0.3;
+const MAX_S = 20, MIN_VOICE_S = 0.2;
 let repOn = false, repState = 'off', repStream = null, repSrc = null, repTap = null, repSink = null, repMeter = null, repPlayer = null;
-let preroll = [], take = [], loudRun = 0, quietS = 0, voicedS = 0, takeS = 0, lastLoudLen = 0;
+let take = [], quietS = 0, voicedS = 0, takeS = 0, lastLoudLen = 0;
 function chunkDb(a) { let s = 0; for (let i = 0; i < a.length; i++) s += a[i] * a[i]; return 10 * Math.log10(s / a.length + 1e-12); }
 function meterPos(db) { return Math.max(0, Math.min(100, (db + 80) / 80 * 100)); }
 function drawMeter(db) {
@@ -638,7 +638,7 @@ async function repListen() {
   repSink = ctx.createGain(); repSink.gain.value = 0;
   repMeter = ctx.createAnalyser(); repMeter.fftSize = 1024;
   repSrc.connect(repTap); repTap.connect(repSink); repSink.connect(ctx.destination); repSrc.connect(repMeter);
-  preroll = []; take = []; loudRun = 0;
+  take = []; win = [];
   repTap.port.onmessage = e => onChunk(e.data);
   repState = 'listening'; $('repNext').hidden = true;
   setStatus('on', 'Listening', 'Say something above the start level.');
@@ -652,40 +652,51 @@ function closeRepMic() {
   if (repStream) repStream.getTracks().forEach(t => t.stop());
   repTap = repSrc = repSink = repMeter = repStream = null;
 }
+// Thresholds are compared with the average level over the last half second, so the bounce of a voice
+// doesn't start or stop a recording. The recording itself starts where the voice first crossed the start level
+// inside that half second, and ends where it last stayed above the silence level.
+const WINDOW_S = 0.5, TAIL_S2 = 0.1;
+let win = [];
+function windowDb() { let e = 0, n = 0; for (const w of win) { e += w.e * w.n; n += w.n; } return 10 * Math.log10(e / (n || 1) + 1e-12); }
 function onChunk(chunk) {
-  const db = chunkDb(chunk), dur = chunk.length / ctx.sampleRate;
+  let e = 0; for (let i = 0; i < chunk.length; i++) e += chunk[i] * chunk[i];
+  const n = chunk.length, dur = n / ctx.sampleRate, raw = 10 * Math.log10(e / n + 1e-12);
+  win.push({ e: e / n, n, raw, chunk });
+  while (win.length * dur > WINDOW_S) win.shift();
+  const db = windowDb();
   drawMeter(db);
   const on = +$('thrOn').value, off = +$('thrOff').value, hold = +$('hold').value / 10;
   if (repState === 'listening') {
-    preroll.push(chunk);
-    while (preroll.length * dur > PREROLL_S) preroll.shift();
-    loudRun = db > on ? loudRun + 1 : 0;
-    if (loudRun >= 2) {
-      take = preroll.slice(); takeS = take.length * dur; voicedS = 2 * dur; quietS = 0; lastLoudLen = take.length;
+    // start: half-second average above the start level, with real voice in it (not one click)
+    if (db > on && win.filter(w => w.raw > on).length * dur >= 0.1) {
+      const first = Math.max(0, win.findIndex(w => w.raw > on));
+      take = win.slice(first).map(w => w.chunk);
+      voicedS = win.slice(first).filter(w => w.raw > on).length * dur;
+      takeS = take.length * dur; quietS = 0; lastLoudLen = take.length;
       repState = 'recording';
       setStatus('rec', 'Recording', 'Recording. Stop talking to hear it back.');
     }
   } else if (repState === 'recording') {
     take.push(chunk); takeS += dur;
-    if (db > off) { quietS = 0; lastLoudLen = take.length; } else quietS += dur;
-    if (db > on) voicedS += dur;
+    if (raw > on) voicedS += dur;
+    // a chunk counts as sound only if the half-second average agrees, so a lone blip in silence is ignored
+    if (raw > off && db > off) { lastLoudLen = take.length; quietS = 0; } else quietS += dur;
     $('info').textContent = takeS.toFixed(1) + ' s';
-    if (quietS >= hold || takeS >= MAX_S) finishTake(dur);
+    if ((quietS >= hold && db < off) || takeS >= MAX_S) finishTake(dur);
   }
 }
 function finishTake(dur) {
   repState = 'processing';
-  closeRepMic();
+  closeRepMic(); win = [];
   if (voicedS < MIN_VOICE_S) { $('msg').textContent = 'Too short. Listening again.'; return repListen(); }
-  const keep = take.slice(0, Math.min(take.length, lastLoudLen + Math.ceil(TAIL_S / dur)));
+  const keep = take.slice(0, Math.min(take.length, lastLoudLen + Math.ceil(TAIL_S2 / dur)));
   const len = keep.reduce((n, c) => n + c.length, 0);
   const buf = ctx.createBuffer(1, len, ctx.sampleRate), d = buf.getChannelData(0);
   let o = 0, peak = 0; for (const c of keep) { d.set(c, o); o += c.length; }
   for (let i = 0; i < len; i++) peak = Math.max(peak, Math.abs(d[i]));
   if (peak > 0.001) for (let i = 0; i < len; i++) d[i] *= 0.95 / peak;
-  // fade in/out to avoid clicks
-  const f = Math.min(480, len >> 2); for (let i = 0; i < f; i++) { d[i] *= i / f; d[len - 1 - i] *= i / f; }
-  take = []; preroll = [];
+  const f = Math.min(240, len >> 2); for (let i = 0; i < f; i++) { d[i] *= i / f; d[len - 1 - i] *= i / f; }
+  take = [];
   repPlay(buf);
 }
 function repPlay(buf) {
@@ -708,7 +719,7 @@ function repNext() {
 function stopRepeat() {
   repOn = false; repState = 'off';
   if (repPlayer) { repPlayer.onended = null; try { repPlayer.stop(); } catch (e) {} repPlayer.disconnect(); repPlayer = null; }
-  closeRepMic(); take = []; preroll = [];
+  closeRepMic(); take = []; win = [];
   $('repBtn').textContent = 'Start'; $('repBtn').classList.remove('stop'); $('repNext').hidden = true;
   drawMeter(-100); scope(null); unlockScreen();
   setStatus('', 'Standby', 'Tap Start, then talk. Set the levels with the meter.'); $('info').textContent = '';

@@ -3,7 +3,7 @@
 A robot voice changer that runs in the browser. Built for iPhone Safari, and it works in any modern browser. It has three modes:
 
 - **Record & replay** (default): tap **Record**, say something, tap **Stop**. It plays back as a robot on a loop, and you can move the faders while it plays. **Save** exports the robot version as a WAV file. Works on the phone speaker with no feedback.
-- **Repeat**: repeat-after-me. Tap **Start** and it listens. When your voice goes above the **Start level**, it records; once it has stayed under the **Silence level** for the **Silence wait** (1 second by default), it plays the line back once as a robot, then listens again. Playback can't be interrupted by talking, and the mic is off while it plays, so it never repeats itself. A live meter shows your level against both thresholds so you can tune them for your room. Turn on **Loop** to keep repeating a line until you tap **Listen**.
+- **Repeat**: repeat-after-me. Tap **Start** and it listens. Levels are averaged over the last half second so the bounce of a voice is ignored. When the average goes above the **Start level**, it records from the moment your voice crossed it; once it has stayed under the **Silence level** for the **Silence wait** (1 second by default), it plays the line back once as a robot, then listens again. Playback can't be interrupted by talking, and the mic is off while it plays, so it never repeats itself. A live meter shows your level against both thresholds so you can tune them for your room. Turn on **Loop** to keep repeating a line until you tap **Listen**.
 - **Live**: tap **Start** and talk; your voice comes back as a robot in real time. Use headphones.
 
 **Live page:** https://simonborst.github.io/robo_voice_changer/
