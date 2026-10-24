@@ -94,33 +94,45 @@ button:focus-visible{outline:2px solid var(--fg);outline-offset:2px}
   </div>
 
   <div class="rack">
-    <div class="sect">Pitch</div>
-    <div class="row" role="group" aria-label="Pitch mode">
-      <button class="chip" data-pitch="off" aria-pressed="true">Natural</button>
-      <button class="chip" data-pitch="mono" aria-pressed="false">Monotone</button>
+    <div class="sect">Voice</div>
+    <div class="row" role="group" aria-label="Voice mode">
+      <button class="chip" data-pitch="off" aria-pressed="false">Natural</button>
+      <button class="chip" data-pitch="mono" aria-pressed="true">Monotone</button>
       <button class="chip" data-pitch="snap" aria-pressed="false">Snap</button>
     </div>
-    <div class="fader" id="noteFader"><label for="note"><span id="noteL">Note</span> <output id="noteV"></output></label>
+    <div class="fader" data-robot><label for="note"><span id="noteL">Note</span> <output id="noteV"></output></label>
       <input type="range" id="note" min="36" max="72" step="1" value="48"></div>
     <div class="row" id="scaleRow" role="group" aria-label="Scale">
       <button class="chip" data-scale="chromatic" aria-pressed="false">Chromatic</button>
       <button class="chip" data-scale="major" aria-pressed="true">Major</button>
       <button class="chip" data-scale="minor" aria-pressed="false">Minor</button>
     </div>
-    <div class="sect">Robot</div>
-    <div class="fader"><label for="freq">Robot tone <output id="freqV"></output></label>
-      <input type="range" id="freq" min="10" max="400" step="1" value="60"></div>
-    <div class="fader"><label for="ring">Ring mod <output id="ringV"></output></label>
-      <input type="range" id="ring" min="0" max="100" step="1" value="100"></div>
-    <div class="fader"><label for="metal">Metallic <output id="metalV"></output></label>
-      <input type="range" id="metal" min="0" max="90" step="1" value="45"></div>
-    <div class="fader"><label for="grit">Grit <output id="gritV"></output></label>
-      <input type="range" id="grit" min="0" max="100" step="1" value="20"></div>
+    <div class="fader" data-robot><label for="tone">Tone <output id="toneV"></output></label>
+      <input type="range" id="tone" min="0" max="100" step="1" value="45"></div>
+    <div class="fader" data-robot><label for="size">Robot size <output id="sizeV"></output></label>
+      <input type="range" id="size" min="-8" max="8" step="1" value="0"></div>
+    <div class="row" data-robot role="group" aria-label="Harmony">
+      <button class="chip" data-harmony="0" aria-pressed="true">Solo</button>
+      <button class="chip" data-harmony="1" aria-pressed="false">+ Octave</button>
+      <button class="chip" data-harmony="2" aria-pressed="false">+ Fifth</button>
+    </div>
+
+    <div class="sect">Effects</div>
+    <div class="fader"><label for="metal">Metal box <output id="metalV"></output></label>
+      <input type="range" id="metal" min="0" max="90" step="1" value="25"></div>
     <div class="fader"><label for="mix">Robot mix <output id="mixV"></output></label>
       <input type="range" id="mix" min="0" max="100" step="1" value="100"></div>
     <div class="fader"><label for="vol">Volume <output id="volV"></output></label>
       <input type="range" id="vol" min="0" max="200" step="1" value="100"></div>
-    <div class="row" role="group" aria-label="Carrier wave">
+
+    <div class="sect">Ring modulator</div>
+    <div class="fader"><label for="ring">Amount <output id="ringV"></output></label>
+      <input type="range" id="ring" min="0" max="100" step="1" value="0"></div>
+    <div class="fader"><label for="freq">Speed <output id="freqV"></output></label>
+      <input type="range" id="freq" min="10" max="400" step="1" value="60"></div>
+    <div class="fader"><label for="grit">Grit <output id="gritV"></output></label>
+      <input type="range" id="grit" min="0" max="100" step="1" value="0"></div>
+    <div class="row" role="group" aria-label="Ring wave">
       <button class="chip" data-wave="sine" aria-pressed="true">Smooth</button>
       <button class="chip" data-wave="square" aria-pressed="false">Buzzy</button>
       <button class="chip" data-wave="sawtooth" aria-pressed="false">Harsh</button>
@@ -143,125 +155,192 @@ button:focus-visible{outline:2px solid var(--fg);outline-offset:2px}
   </div>
 </div>
 
+<script type="text/worklet" id="robotWorklet">
+// Robot voice resynthesis. Every 256 samples it measures the voice's spectral envelope (cepstrum),
+// then re-sings it as smooth pulses at a fixed note (Monotone) or at the voice's own pitch snapped to a scale (Snap).
+const N = 1024, HOP = 256, ACC = 8192;
+const TW_RE = new Float64Array(N / 2), TW_IM = new Float64Array(N / 2), REV = new Uint16Array(N);
+for (let i = 0; i < N / 2; i++) { TW_RE[i] = Math.cos(-2 * Math.PI * i / N); TW_IM[i] = Math.sin(-2 * Math.PI * i / N); }
+for (let i = 0, b = Math.log2(N); i < N; i++) { let r = 0; for (let j = 0; j < b; j++) r |= ((i >> j) & 1) << (b - 1 - j); REV[i] = r; }
+function fft(re, im) {
+  for (let i = 0; i < N; i++) { const j = REV[i]; if (j > i) { let t = re[i]; re[i] = re[j]; re[j] = t; t = im[i]; im[i] = im[j]; im[j] = t; } }
+  for (let size = 2; size <= N; size <<= 1) {
+    const half = size >> 1, step = N / size;
+    for (let s = 0; s < N; s += size) for (let k = 0; k < half; k++) {
+      const wr = TW_RE[k * step], wi = TW_IM[k * step], a = s + k, b = a + half;
+      const tr = re[b] * wr - im[b] * wi, ti = re[b] * wi + im[b] * wr;
+      re[b] = re[a] - tr; im[b] = im[a] - ti; re[a] += tr; im[a] += ti;
+    }
+  }
+}
+const HANN = new Float64Array(N); for (let i = 0; i < N; i++) HANN[i] = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / N);
+
+class RobotVoice extends AudioWorkletProcessor {
+  constructor(opts) {
+    super();
+    this.p = Object.assign({ pitch: 'mono', note: 48, scale: [0, 2, 4, 5, 7, 9, 11], tone: 40, size: 0, harmony: 0 }, (opts && opts.processorOptions) || {});
+    this.port.onmessage = e => Object.assign(this.p, e.data);
+    this.ring = new Float64Array(N); this.w = 0; this.inBuf = new Float64Array(N); this.hopCount = 0;
+    this.acc = new Float64Array(ACC); this.t = 0;              // absolute output sample counter
+    this.pulse = [N, N];                                        // next pulse time for main voice and harmony voice
+    this.grain = new Float64Array(N); this.snapF = 0; this.lastF = 0;
+    this.re = new Float64Array(N); this.im = new Float64Array(N); this.env = new Float64Array(N / 2 + 1);
+  }
+  detect(x) { // YIN on the current frame, decimated by 2
+    const n = N >> 1, rate = sampleRate / 2, d = new Float64Array(n);
+    let rms = 0; for (let i = 0; i < n; i++) { const v = x[i * 2]; rms += v * v; }
+    if (Math.sqrt(rms / n) < 0.008) return 0;
+    const minLag = Math.floor(rate / 600), maxLag = Math.min(Math.floor(rate / 65), n >> 1), W = n - maxLag;
+    for (let tau = 1; tau <= maxLag; tau++) { let s = 0; for (let j = 0; j < W; j++) { const v = x[j * 2] - x[(j + tau) * 2]; s += v * v; } d[tau] = s; }
+    let sum = 0; for (let tau = 1; tau <= maxLag; tau++) { sum += d[tau]; d[tau] = d[tau] * tau / (sum || 1); }
+    for (let tau = minLag; tau < maxLag; tau++) if (d[tau] < 0.15) {
+      while (tau + 1 < maxLag && d[tau + 1] < d[tau]) tau++;
+      const a = d[tau - 1], b = d[tau], c = d[tau + 1], den = a - 2 * b + c;
+      return rate / (den ? tau + (a - c) / (2 * den) : tau);
+    }
+    return 0;
+  }
+  snap(f) {
+    const m = 69 + 12 * Math.log2(f / 440), root = this.p.note % 12, set = this.p.scale;
+    let best = Math.round(m), bd = 1e9;
+    for (let k = Math.floor(m) - 2; k <= Math.ceil(m) + 2; k++) if (set.includes(((k - root) % 12 + 12) % 12) && Math.abs(k - m) < bd) { best = k; bd = Math.abs(k - m); }
+    return 440 * Math.pow(2, (best - 69) / 12);
+  }
+  analyse() {
+    const { re, im, env } = this, x = this.inBuf, p = this.p;
+    for (let i = 0; i < N; i++) x[i] = this.ring[(this.w + i) % N];
+    // spectrum
+    let e2 = 0;
+    for (let i = 0; i < N; i++) { re[i] = x[i] * HANN[i]; im[i] = 0; e2 += re[i] * re[i]; }
+    const rms = Math.sqrt(e2 / N);
+    fft(re, im);
+    let hf = 0, tot = 1e-12;
+    const binHz = sampleRate / N;
+    for (let k = 0; k <= N / 2; k++) { const pw = re[k] * re[k] + im[k] * im[k]; tot += pw; if (k * binHz > 3000) hf += pw; }
+    const voiced = Math.min(1, Math.max(0, (0.45 - hf / tot) / 0.25));
+    // cepstrum -> smooth envelope (drops the original pitch, keeps the vowel shape)
+    for (let k = 0; k < N; k++) { re[k] = Math.log(Math.sqrt(re[k] * re[k] + im[k] * im[k]) + 1e-9); im[k] = 0; }
+    fft(re, im); // forward FFT of a real even signal = N * IFFT; scaling handled below
+    const L = Math.max(8, Math.round(sampleRate * 0.0012));
+    for (let k = 0; k < N; k++) { if (k >= L && k <= N - L) { re[k] = 0; im[k] = 0; } else { re[k] /= N; im[k] /= N; } }
+    fft(re, im);
+    for (let k = 0; k <= N / 2; k++) env[k] = Math.exp(re[k]);
+    // build zero-phase grain: envelope (shifted by Size) x soft source rolloff (Tone)
+    const ratio = Math.pow(2, p.size / 12), fc = 400 * Math.pow(2, p.tone / 100 * 4);
+    for (let k = 0; k <= N / 2; k++) {
+      const src = k / ratio, i0 = Math.floor(src), fr = src - i0;
+      const ev = i0 + 1 <= N / 2 ? env[i0] * (1 - fr) + env[i0 + 1] * fr : env[N / 2] * 0.1;
+      const f = k * binHz, g = 1 / (1 + (f / fc) * (f / fc));
+      re[k] = ev * g; im[k] = 0;
+      if (k > 0 && k < N / 2) { re[N - k] = re[k]; im[N - k] = 0; }
+    }
+    fft(re, im); // real, even spectrum -> real symmetric pulse (time-reversed = same)
+    let gE = 1e-12;
+    for (let i = 0; i < N; i++) { const v = re[(i + N / 2) % N] * HANN[i]; this.grain[i] = v; gE += v * v; }
+    const scale = rms * voiced / Math.sqrt(gE) * 1.6;
+    for (let i = 0; i < N; i++) this.grain[i] *= scale;
+    // pitch
+    if (p.pitch === 'snap') {
+      const f = this.detect(x);
+      if (f) {
+        // hysteresis: stay on the current note until the voice clearly moves away from it
+        const m = 69 + 12 * Math.log2(f / 440), cur = this.snapF ? 69 + 12 * Math.log2(this.snapF / 440) : -99;
+        if (Math.abs(m - cur) > 0.75) this.snapF = this.snap(f);
+      }
+      if (!this.snapF) this.snapF = 440 * Math.pow(2, (p.note - 69) / 12);
+    }
+  }
+  addGrain(at, amp) {
+    const g = this.grain, a = this.acc, base = Math.floor(at);
+    for (let i = 0; i < N; i++) a[(base + i) % ACC] += g[i] * amp;
+  }
+  process(inputs, outputs) {
+    const inp = inputs[0] && inputs[0][0], out = outputs[0][0], p = this.p;
+    if (!out) return true;
+    for (let i = 0; i < out.length; i++) {
+      // shift input in
+      this.ring[this.w] = inp ? inp[i] : 0; this.w = (this.w + 1) % N;
+      if (++this.hopCount >= HOP) { this.hopCount = 0; this.analyse(); }
+      const f0 = p.pitch === 'snap' ? (this.snapF || 130.8) : 440 * Math.pow(2, (p.note - 69) / 12);
+      const per = sampleRate / f0;
+      if (this.t >= this.pulse[0]) { this.addGrain(this.t, Math.sqrt(per) * (p.harmony ? 0.75 : 1)); this.pulse[0] += per; if (this.pulse[0] < this.t) this.pulse[0] = this.t + per; }
+      if (p.harmony) {
+        const per2 = per * (p.harmony === 1 ? 2 : 1.5);
+        if (this.t >= this.pulse[1]) { this.addGrain(this.t, Math.sqrt(per2) * 0.5); this.pulse[1] += per2; if (this.pulse[1] < this.t) this.pulse[1] = this.t + per2; }
+      } else this.pulse[1] = this.t;
+      const j = this.t % ACC;
+      out[i] = this.acc[j]; this.acc[j] = 0;
+      this.t++;
+    }
+    return true;
+  }
+}
+registerProcessor('robot-voice', RobotVoice);
+</script>
 <script>
 const $ = id => document.getElementById(id);
 const app = $('app');
-const ids = ['note','freq','ring','metal','grit','mix','vol'];
+const ids = ['note','tone','size','metal','mix','vol','ring','freq','grit'];
 const NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
 const SCALES = { chromatic: [0,1,2,3,4,5,6,7,8,9,10,11], major: [0,2,4,5,7,9,11], minor: [0,2,3,5,7,8,10] };
 const noteName = m => NAMES[m % 12] + (Math.floor(m / 12) - 1);
 const mtof = m => 440 * Math.pow(2, (m - 69) / 12);
 const fmt = {
   note: v => pitch === 'snap' ? NAMES[v % 12] + ' ' + scale : noteName(+v) + ' · ' + Math.round(mtof(v)) + ' Hz',
-  freq: v => v + ' Hz', ring: v => v + '%', metal: v => v + '%', grit: v => v + '%', mix: v => v + '%', vol: v => v + '%'
+  tone: v => v < 34 ? 'Warm' : v < 67 ? 'Clear' : 'Bright',
+  size: v => v == 0 ? 'Human' : v < 0 ? 'Bigger ' + (-v) : 'Smaller ' + v,
+  metal: v => v + '%', mix: v => v + '%', vol: v => v + '%', ring: v => v + '%', freq: v => v + ' Hz', grit: v => v + '%'
 };
-let wave = 'sine', mode = 'rec', loop = true, pitch = 'off', scale = 'major';
-
+let wave = 'sine', mode = 'rec', loop = true, pitch = 'mono', scale = 'major', harmony = 0;
+const STORE = 'robotVoice3';
 try {
-  const s = JSON.parse(localStorage.getItem('robotVoice') || '{}');
+  const s = JSON.parse(localStorage.getItem(STORE) || '{}');
   ids.forEach(k => { if (s[k] != null) $(k).value = s[k]; });
   if (s.wave) wave = s.wave; if (s.mode) mode = s.mode; if (s.loop != null) loop = s.loop;
-  if (s.pitch) pitch = s.pitch; if (s.scale) scale = s.scale;
+  if (s.pitch) pitch = s.pitch; if (s.scale) scale = s.scale; if (s.harmony != null) harmony = s.harmony;
 } catch (e) {}
 function save() {
-  try { const s = { wave, mode, loop, pitch, scale }; ids.forEach(k => s[k] = $(k).value); localStorage.setItem('robotVoice', JSON.stringify(s)); } catch (e) {}
-}
-
-/* ---------- pitch detection (YIN-style) and snapping ---------- */
-function detectPitch(buf, sr) {
-  const n = buf.length >> 1, x = new Float32Array(n), rate = sr / 2;
-  let rms = 0;
-  for (let i = 0; i < n; i++) { x[i] = buf[i * 2]; rms += x[i] * x[i]; }
-  if (Math.sqrt(rms / n) < 0.01) return 0;
-  const minLag = Math.floor(rate / 600), maxLag = Math.min(Math.floor(rate / 65), n >> 1), W = n - maxLag;
-  const d = new Float32Array(maxLag + 1);
-  for (let tau = 1; tau <= maxLag; tau++) {
-    let s = 0;
-    for (let j = 0; j < W; j++) { const v = x[j] - x[j + tau]; s += v * v; }
-    d[tau] = s;
-  }
-  let sum = 0;
-  for (let tau = 1; tau <= maxLag; tau++) {
-    sum += d[tau]; const c = d[tau] * tau / (sum || 1); d[tau] = c;
-  }
-  for (let tau = minLag; tau < maxLag; tau++) {
-    if (d[tau] < 0.15) {
-      while (tau + 1 < maxLag && d[tau + 1] < d[tau]) tau++;
-      const a = d[tau - 1], b = d[tau], c = d[tau + 1], den = a - 2 * b + c;
-      const t = den ? tau + (a - c) / (2 * den) : tau;
-      return rate / t;
-    }
-  }
-  return 0;
-}
-function snapFreq(f, p) {
-  const m = 69 + 12 * Math.log2(f / 440), root = p.note % 12, set = SCALES[p.scale] || SCALES.chromatic;
-  let best = Math.round(m), bestD = Infinity;
-  for (let k = Math.floor(m) - 2; k <= Math.ceil(m) + 2; k++) {
-    if (set.includes(((k - root) % 12 + 12) % 12) && Math.abs(k - m) < bestD) { best = k; bestD = Math.abs(k - m); }
-  }
-  return mtof(best);
-}
-let pitchTimer = null, lastSnap = 0;
-function pitchLoop() {
-  clearInterval(pitchTimer); pitchTimer = null;
-  if (!chain || pitch !== 'snap' || !busy()) return;
-  const buf = new Float32Array(chain.pitchAn.fftSize);
-  pitchTimer = setInterval(() => {
-    chain.pitchAn.getFloatTimeDomainData(buf);
-    const f = detectPitch(buf, ctx.sampleRate);
-    if (!f) return;
-    const target = snapFreq(f, params());
-    if (target !== lastSnap) { lastSnap = target; chain.vocOsc.frequency.setTargetAtTime(target, ctx.currentTime, 0.008); }
-  }, 30);
+  try { const s = { wave, mode, loop, pitch, scale, harmony }; ids.forEach(k => s[k] = $(k).value); localStorage.setItem(STORE, JSON.stringify(s)); } catch (e) {}
 }
 
 /* ---------- effect chain (works on live and offline contexts) ---------- */
+const WORKLET_URL = URL.createObjectURL(new Blob([$('robotWorklet').textContent], { type: 'application/javascript' }));
+function params() {
+  const p = {}; ids.forEach(k => p[k] = +$(k).value);
+  Object.assign(p, { wave, pitch, harmony, scale: SCALES[scale] });
+  return p;
+}
+function workletParams(p) { return { pitch: p.pitch, note: p.note, scale: p.scale, tone: p.tone, size: p.size, harmony: p.harmony }; }
 function curve(amount) {
   const n = 1024, c = new Float32Array(n), k = amount * 0.6;
   for (let i = 0; i < n; i++) { const x = i * 2 / n - 1; c[i] = k === 0 ? x : (1 + k) * x / (1 + k * Math.abs(x)); }
   return c;
 }
-function params() {
-  const p = {}; ids.forEach(k => p[k] = +$(k).value); p.wave = wave; p.pitch = pitch; p.scale = scale; return p;
-}
-const VOC_GAIN = 20;
-const RECT = (() => { const c = new Float32Array(1024); for (let i = 0; i < 1024; i++) c[i] = Math.abs(i * 2 / 1024 - 1); return c; })();
-function buildChain(c) {
+function buildChain(c, p) {
   const input = c.createGain();
   const hp = c.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 90;
   input.connect(hp);
-  const pitchAn = c.createAnalyser(); pitchAn.fftSize = 2048; input.connect(pitchAn);
-
-  // Pitch stage. Natural: voice passes straight through.
-  // Monotone/Snap: a 16-band channel vocoder re-sings the voice on a sawtooth at a fixed or snapped pitch.
   const robotIn = c.createGain();
+  // Natural: the voice passes straight through
   const pass = c.createGain(); hp.connect(pass); pass.connect(robotIn);
-  const vocOut = c.createGain(); vocOut.connect(robotIn);
-  const vocOsc = c.createOscillator(); vocOsc.type = 'sawtooth'; vocOsc.frequency.value = 130.8; vocOsc.start();
-  const BANDS = 16, lo = 140, hi = 6500;
-  for (let i = 0; i < BANDS; i++) {
-    const f = lo * Math.pow(hi / lo, i / (BANDS - 1));
-    const mb = c.createBiquadFilter(); mb.type = 'bandpass'; mb.frequency.value = f; mb.Q.value = 7;
-    const rect = c.createWaveShaper(); rect.curve = RECT;
-    const env = c.createBiquadFilter(); env.type = 'lowpass'; env.frequency.value = 35;
-    const cb = c.createBiquadFilter(); cb.type = 'bandpass'; cb.frequency.value = f; cb.Q.value = 7;
-    const vca = c.createGain(); vca.gain.value = 0;
-    hp.connect(mb); mb.connect(rect); rect.connect(env); env.connect(vca.gain);
-    vocOsc.connect(cb); cb.connect(vca); vca.connect(vocOut);
+  // Monotone / Snap: resynthesis worklet re-sings the voice
+  let robot = null;
+  if (c.audioWorklet && window.AudioWorkletNode) {
+    robot = new AudioWorkletNode(c, 'robot-voice', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1], channelCount: 1, channelCountMode: 'explicit', processorOptions: workletParams(p) });
+    const robotG = c.createGain(); hp.connect(robot); robot.connect(robotG); robotG.connect(robotIn); robot.gainNode = robotG;
   }
-  // keep consonants (s, t, k) understandable
+  // consonants (s, t, k) pass through so words stay clear
   const hiss = c.createBiquadFilter(); hiss.type = 'highpass'; hiss.frequency.value = 4500;
-  const hissG = c.createGain(); hissG.gain.value = 0.35; hp.connect(hiss); hiss.connect(hissG); hissG.connect(vocOut);
-
-  // Ring modulator, blended by the Ring mod fader
+  const hissG = c.createGain(); hp.connect(hiss); hiss.connect(hissG); hissG.connect(robotIn);
+  // ring modulator, blended by Amount
   const ring = c.createGain(); ring.gain.value = 0;
   const osc = c.createOscillator(); osc.connect(ring.gain); osc.start();
   const ringDry = c.createGain(), ringWet = c.createGain();
   const shaper = c.createWaveShaper(); shaper.oversample = '2x';
   robotIn.connect(ringDry); ringDry.connect(shaper);
   robotIn.connect(ring); ring.connect(ringWet); ringWet.connect(shaper);
-  const bp = c.createBiquadFilter(); bp.type = 'peaking'; bp.frequency.value = 1800; bp.Q.value = 1; bp.gain.value = 6;
+  // metal box: short resonant echo plus a little presence
+  const bp = c.createBiquadFilter(); bp.type = 'peaking'; bp.frequency.value = 1800; bp.Q.value = 1; bp.gain.value = 3;
   const delay = c.createDelay(0.05), fb = c.createGain(), combWet = c.createGain();
   const wet = c.createGain(), dry = c.createGain(), out = c.createGain();
   const comp = c.createDynamicsCompressor(); comp.threshold.value = -18; comp.ratio.value = 6;
@@ -269,26 +348,27 @@ function buildChain(c) {
   hp.connect(dry); shaper.connect(bp); bp.connect(wet); bp.connect(delay);
   delay.connect(fb); fb.connect(delay); delay.connect(combWet); combWet.connect(wet);
   wet.connect(out); dry.connect(out); out.connect(comp); comp.connect(analyser); analyser.connect(c.destination);
-  return { c, input, pitchAn, pass, vocOut, vocOsc, hissG, osc, ringDry, ringWet, shaper, delay, fb, combWet, wet, dry, out, analyser };
+  const n = { c, input, pass, robot, hissG, osc, ringDry, ringWet, shaper, delay, fb, combWet, wet, dry, out, analyser };
+  setChain(n, p, false);
+  return n;
 }
 function setChain(n, p, smooth) {
   const t = n.c.currentTime;
   const set = (param, v) => smooth ? param.setTargetAtTime(v, t, 0.03) : (param.value = v);
-  const voc = p.pitch !== 'off';
-  set(n.pass.gain, voc ? 0 : 1);
-  set(n.vocOut.gain, voc ? VOC_GAIN : 0);
-  set(n.hissG.gain, voc ? 0.35 : 0);
-  if (p.pitch === 'mono') set(n.vocOsc.frequency, mtof(p.note));
+  const robot = p.pitch !== 'off' && n.robot;
+  set(n.pass.gain, robot ? 0 : 1);
+  if (n.robot) { set(n.robot.gainNode.gain, robot ? 1 : 0); n.robot.port.postMessage(workletParams(p)); }
+  set(n.hissG.gain, robot ? 0.35 : 0);
   const r = p.ring / 100;
   set(n.ringDry.gain, 1 - r); set(n.ringWet.gain, r);
-  set(n.osc.frequency, p.freq);
-  n.osc.type = p.wave;
-  set(n.delay.delayTime, Math.min(0.045, Math.max(0.002, 1 / Math.max(p.freq, 25))));
+  set(n.osc.frequency, p.freq); n.osc.type = p.wave;
+  // metal box resonates at a fixed small-room pitch, independent of the ring speed
+  set(n.delay.delayTime, 0.0042);
   const m = p.metal / 100;
-  set(n.fb.gain, m * 0.9); set(n.combWet.gain, m);
+  set(n.fb.gain, m * 0.85); set(n.combWet.gain, m * 0.8);
   n.shaper.curve = curve(p.grit / 10);
   const mix = p.mix / 100;
-  set(n.wet.gain, mix * 1.6); set(n.dry.gain, 1 - mix);
+  set(n.wet.gain, mix * 1.4); set(n.dry.gain, 1 - mix);
   set(n.out.gain, p.vol / 100);
 }
 
@@ -298,7 +378,9 @@ async function engine() {
   if (navigator.audioSession) { try { navigator.audioSession.type = 'play-and-record'; } catch (e) {} }
   if (!ctx) {
     ctx = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: 'interactive' });
-    chain = buildChain(ctx); setChain(chain, params(), false);
+    if (ctx.audioWorklet) { try { await ctx.audioWorklet.addModule(WORKLET_URL); } catch (e) {} }
+    chain = buildChain(ctx, params());
+    if (!chain.robot) $('msg').textContent = 'This browser cannot run Monotone or Snap. Natural mode still works.';
     ctx.onstatechange = () => { if (busy() && ctx.state !== 'running') ctx.resume().catch(() => {}); };
   }
   await ctx.resume();
@@ -331,12 +413,12 @@ async function startLive() {
     liveStream = await getMic();
     liveSrc = ctx.createMediaStreamSource(liveStream);
     liveSrc.connect(chain.input);
-    setStatus('on', 'Live', 'Talk away. Adjust the faders while it runs.');
+    setStatus('on', 'Live', 'Talk away. Adjust the controls while it runs.');
     $('liveBtn').textContent = 'Stop'; $('liveBtn').classList.add('stop');
-    const lat = ((ctx.baseLatency || 0) + (ctx.outputLatency || 0)) * 1000;
+    const lat = ((ctx.baseLatency || 0) + (ctx.outputLatency || 0)) * 1000 + (pitch !== 'off' ? 21 : 0);
     $('info').textContent = lat ? Math.round(lat) + ' ms' : '';
     liveStream.getAudioTracks()[0].onended = () => { if (liveStream) { stopLive(); setStatus('err', 'Mic lost', 'Another app took the microphone. Tap Start again.'); } };
-    lockScreen(); scope(chain.analyser); pitchLoop();
+    lockScreen(); scope(chain.analyser);
   } catch (e) { stopLive(); setStatus('err', 'Error', micError(e)); }
 }
 function stopLive() {
@@ -346,7 +428,7 @@ function stopLive() {
   $('liveBtn').textContent = 'Start'; $('liveBtn').classList.remove('stop');
   $('info').textContent = '';
   setStatus('', 'Standby', 'Plug in headphones, then tap Start.');
-  unlockScreen(); scope(null); pitchLoop();
+  unlockScreen(); scope(null);
 }
 
 /* ---------- record & replay mode ---------- */
@@ -366,7 +448,6 @@ async function startRec() {
     const parts = [];
     recorder.ondataavailable = e => { if (e.data && e.data.size) parts.push(e.data); };
     recorder.onstop = () => finishRec(new Blob(parts, { type: recorder.mimeType || type }));
-    // meter the raw mic without sending it to the speaker
     const meter = ctx.createAnalyser(); meter.fftSize = 1024;
     scopeSrc = ctx.createMediaStreamSource(recStream); scopeSrc.connect(meter);
     recorder.start();
@@ -394,7 +475,6 @@ async function finishRec(blob) {
     $('recBtn').textContent = 'Record again';
     $('playBtn').disabled = $('saveBtn').disabled = false;
     $('info').textContent = clock(recBuffer.duration);
-    setStatus('', 'Ready', 'Tap Play to hear it as a robot.');
     startPlay();
   } catch (e) { setStatus('err', 'Error', 'Could not read the recording. Try again.'); }
 }
@@ -408,8 +488,8 @@ function startPlay() {
   player.onended = () => { if (player && !player.loop) stopPlay(); };
   player.start(); playStart = ctx.currentTime;
   $('playBtn').textContent = 'Stop'; $('playBtn').classList.add('stop');
-  setStatus('on', 'Playing', loop ? 'Looping. Move the faders to shape the voice.' : 'Playing once.');
-  lockScreen(); scope(chain.analyser); pitchLoop();
+  setStatus('on', 'Playing', loop ? 'Looping. Change the controls to shape the voice.' : 'Playing once.');
+  lockScreen(); scope(chain.analyser);
   tick();
 }
 function tick() {
@@ -422,7 +502,7 @@ function stopPlay() {
   if (player) { player.onended = null; try { player.stop(); } catch (e) {} player.disconnect(); player = null; }
   $('playBtn').textContent = 'Play'; $('playBtn').classList.remove('stop');
   if (recBuffer && mode === 'rec' && !recStream) { setStatus('', 'Ready', 'Tap Play to hear it again, or Save to keep it.'); $('info').textContent = clock(recBuffer.duration); }
-  scope(null); unlockScreen(); pitchLoop();
+  scope(null); unlockScreen();
 }
 
 /* ---------- save: render offline with current settings, export WAV ---------- */
@@ -440,20 +520,10 @@ async function saveRobot() {
   if (!recBuffer) return;
   $('saveBtn').disabled = true; $('msg').textContent = 'Rendering…';
   try {
-    const rate = recBuffer.sampleRate, len = Math.ceil((recBuffer.duration + 0.4) * rate);
+    const rate = recBuffer.sampleRate, len = Math.ceil((recBuffer.duration + 0.5) * rate);
     const off = new (window.OfflineAudioContext || window.webkitOfflineAudioContext)(1, len, rate);
-    const n = buildChain(off); setChain(n, params(), false);
-    const p = params();
-    if (p.pitch === 'snap') {
-      const data = recBuffer.getChannelData(0), hop = 1024, win = 2048;
-      let prev = 0;
-      for (let i = 0; i + win <= data.length; i += hop) {
-        const f = detectPitch(data.subarray(i, i + win), rate);
-        if (!f) continue;
-        const target = snapFreq(f, p);
-        if (target !== prev) { n.vocOsc.frequency.setTargetAtTime(target, (i + win / 2) / rate, 0.008); prev = target; }
-      }
-    }
+    if (off.audioWorklet) { try { await off.audioWorklet.addModule(WORKLET_URL); } catch (e) {} }
+    const n = buildChain(off, params());
     const src = off.createBufferSource(); src.buffer = recBuffer; src.connect(n.input); src.start();
     const rendered = await off.startRendering();
     const file = new File([wav(rendered)], 'robot-voice-' + new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-') + '.wav', { type: 'audio/wav' });
@@ -491,16 +561,15 @@ function draw() {
 function busy() { return !!(liveStream || recStream || player); }
 function render() {
   ids.forEach(k => { const el = $(k); $(k + 'V').textContent = fmt[k](el.value); el.style.setProperty('--p', ((el.value - el.min) / (el.max - el.min) * 100) + '%'); });
-  document.querySelectorAll('[data-wave]').forEach(b => b.setAttribute('aria-pressed', b.dataset.wave === wave));
-  document.querySelectorAll('[data-pitch]').forEach(b => b.setAttribute('aria-pressed', b.dataset.pitch === pitch));
-  document.querySelectorAll('[data-scale]').forEach(b => b.setAttribute('aria-pressed', b.dataset.scale === scale));
-  $('noteFader').hidden = pitch === 'off'; $('scaleRow').hidden = pitch !== 'snap';
+  const press = (sel, key, val) => document.querySelectorAll(sel).forEach(b => b.setAttribute('aria-pressed', String(b.dataset[key]) === String(val)));
+  press('[data-wave]', 'wave', wave); press('[data-pitch]', 'pitch', pitch); press('[data-scale]', 'scale', scale); press('[data-harmony]', 'harmony', harmony);
+  document.querySelectorAll('[data-robot]').forEach(el => el.hidden = pitch === 'off');
+  $('scaleRow').hidden = pitch !== 'snap';
   $('noteL').textContent = pitch === 'snap' ? 'Key' : 'Note';
   $('modeRec').setAttribute('aria-pressed', mode === 'rec'); $('modeLive').setAttribute('aria-pressed', mode === 'live');
   $('recPanel').hidden = mode !== 'rec'; $('livePanel').hidden = mode !== 'live';
   $('loopBtn').setAttribute('aria-pressed', loop);
   if (chain) setChain(chain, params(), true);
-  if (pitch === 'snap') { if (!pitchTimer) pitchLoop(); } else pitchLoop();
   save();
 }
 function setMode(m) {
@@ -521,8 +590,9 @@ $('loopBtn').onclick = () => { loop = !loop; if (player) player.loop = loop; ren
 $('saveBtn').onclick = saveRobot;
 ids.forEach(k => $(k).addEventListener('input', render));
 document.querySelectorAll('[data-wave]').forEach(b => b.addEventListener('click', () => { wave = b.dataset.wave; render(); }));
-document.querySelectorAll('[data-pitch]').forEach(b => b.addEventListener('click', () => { pitch = b.dataset.pitch; lastSnap = 0; render(); }));
-document.querySelectorAll('[data-scale]').forEach(b => b.addEventListener('click', () => { scale = b.dataset.scale; lastSnap = 0; render(); }));
+document.querySelectorAll('[data-pitch]').forEach(b => b.addEventListener('click', () => { pitch = b.dataset.pitch; render(); }));
+document.querySelectorAll('[data-scale]').forEach(b => b.addEventListener('click', () => { scale = b.dataset.scale; render(); }));
+document.querySelectorAll('[data-harmony]').forEach(b => b.addEventListener('click', () => { harmony = +b.dataset.harmony; render(); }));
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible' && busy()) {
     lockScreen(); if (ctx && ctx.state !== 'running') ctx.resume().catch(() => {});

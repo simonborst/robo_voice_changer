@@ -9,18 +9,25 @@ A robot voice changer that runs in the browser. Built for iPhone Safari, and it 
 
 ## Controls
 
-| Fader | What it does |
-| --- | --- |
-| Pitch: Natural / Monotone / Snap | Natural keeps your own pitch. Monotone re-sings your voice on one fixed note (a 16-band vocoder). Snap tracks your pitch and snaps it to the nearest note in the chosen key, like hard auto-tune. |
-| Note / Key | The fixed note in Monotone, or the key root in Snap (with Chromatic, Major or Minor scale). |
-| Ring mod | How much of the ring modulator is applied. Lower it in Snap mode to keep the notes in tune. |
-| Robot tone | Frequency of the ring modulator (10–400 Hz). Low values sound like a classic sci-fi robot, high values like a buzzy droid. |
-| Metallic | Amount of the short, resonant echo that gives the tinny, metal-box ring. |
-| Grit | Soft distortion. |
-| Robot mix | Balance between your normal voice and the robot voice. |
-| Volume | Output level. |
+**Voice**
 
-The **Smooth / Buzzy / Harsh** buttons switch the modulator's waveform. Settings are remembered on your device.
+| Control | What it does |
+| --- | --- |
+| Natural / Monotone / Snap | Natural keeps your own voice. Monotone re-sings your words on one steady note. Snap follows your pitch and snaps it to the nearest note in a key, like hard auto-tune. |
+| Note / Key | The note for Monotone, or the key for Snap (with Chromatic, Major or Minor). |
+| Tone | Warm to bright. |
+| Robot size | Shifts the voice's resonances: bigger robot or smaller robot, without changing the note. |
+| Solo / + Octave / + Fifth | Adds a second robot voice an octave or a fifth below. |
+
+**Effects:** Metal box (short metallic resonance), Robot mix (blend with your normal voice), Volume.
+
+**Ring modulator** (off by default): Amount, Speed, Grit, and Smooth / Buzzy / Harsh waveform. This is the classic sci-fi ring-mod sound and adds buzz.
+
+### How Monotone and Snap work
+
+An AudioWorklet measures the shape of your voice's spectrum (the vowel and consonant resonances) 187 times a second using a cepstrum, then rebuilds the voice from smooth pulses at the target pitch. Your words keep their shape but the pitch becomes perfectly steady. Hiss-like consonants pass through so speech stays clear.
+
+Settings are remembered on your device.
 
 ## Using it on iPhone
 
